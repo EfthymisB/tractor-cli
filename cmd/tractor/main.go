@@ -4,54 +4,79 @@ import (
 	"fmt"
 	"os"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/tractor-cli/tractor-cli/internal/api"
 	"github.com/tractor-cli/tractor-cli/internal/config"
+	"github.com/tractor-cli/tractor-cli/internal/tui"
 )
 
 func main() {
+	var sanity bool
+
 	root := &cobra.Command{
 		Use:   "tractor",
 		Short: "Interactive TUI for Pixar Tractor render farm",
-		RunE:  runSanityCheck,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if sanity {
+				return runSanityCheck()
+			}
+			return runTUI()
+		},
 	}
+	root.Flags().BoolVar(&sanity, "sanity", false, "print jobs to stdout and exit (Phase 1 smoke test)")
+
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-// runSanityCheck authenticates and prints all active jobs to stdout.
-// This is the Phase 1 smoke test — it will be replaced by the TUI in Phase 2.
-func runSanityCheck(cmd *cobra.Command, args []string) error {
+func buildClient() (*api.Client, *config.Config, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
-
 	password := config.Password()
 	if password == "" {
-		return fmt.Errorf("TRACTOR_PASSWORD environment variable is not set")
+		return nil, nil, fmt.Errorf("TRACTOR_PASSWORD environment variable is not set")
 	}
-
-	fmt.Printf("Connecting to %s as %s...\n", cfg.BaseURL(), cfg.Auth.Username)
-
 	client, err := api.NewClient(cfg.BaseURL())
 	if err != nil {
-		return fmt.Errorf("creating client: %w", err)
+		return nil, nil, fmt.Errorf("creating client: %w", err)
 	}
-
 	if err := client.Login(cfg.Auth.Username, password); err != nil {
-		return fmt.Errorf("login: %w", err)
+		return nil, nil, fmt.Errorf("login: %w", err)
 	}
-	fmt.Printf("Authenticated successfully (tsid: %s).\n", client.TSID())
+	return client, cfg, nil
+}
+
+func runTUI() error {
+	client, cfg, err := buildClient()
+	if err != nil {
+		return err
+	}
+	p := tea.NewProgram(
+		tui.New(client, cfg),
+		tea.WithAltScreen(),
+	)
+	_, err = p.Run()
+	return err
+}
+
+func runSanityCheck() error {
+	client, cfg, err := buildClient()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Connected to %s as %s (tsid: %s)\n\n",
+		cfg.BaseURL(), cfg.Auth.Username, client.TSID())
 
 	jobs, err := client.QueryJobs(api.JobFilter{})
 	if err != nil {
 		return fmt.Errorf("querying jobs: %w", err)
 	}
-
-	fmt.Printf("\nFound %d job(s):\n\n", len(jobs))
+	fmt.Printf("Found %d job(s):\n\n", len(jobs))
 	fmt.Printf("%-8s %-40s %-12s %-10s %8s %5s %5s\n",
 		"JID", "TITLE", "OWNER", "STATUS", "PRIORITY", "DONE", "ERR")
 	fmt.Println(repeat("-", 95))
@@ -71,9 +96,9 @@ func truncate(s string, n int) string {
 }
 
 func repeat(s string, n int) string {
-	out := ""
-	for i := 0; i < n; i++ {
-		out += s
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = s[0]
 	}
-	return out
+	return string(b)
 }
