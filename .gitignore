@@ -1,0 +1,19 @@
+# Binaries
+tractor
+tractor.exe
+dist/
+
+# Go build cache
+*.test
+*.out
+
+# goreleaser
+dist/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Config with secrets (never commit)
+config.yaml
