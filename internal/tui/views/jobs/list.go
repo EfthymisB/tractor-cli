@@ -70,21 +70,26 @@ func (m ListModel) Init() tea.Cmd {
 func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// SubmitMsg and CancelMsg are dispatched as Cmds by the filter bar after it
+	// closes itself, so they arrive in the NEXT update cycle when Active() is
+	// already false. Handle them first, before the Active() check.
+	switch msg := msg.(type) {
+	case filter.SubmitMsg:
+		m.apiFilter = msg.Filter
+		m.loading = true
+		cmds = append(cmds, m.doFetch())
+		m = m.recalcTableHeight()
+		return m, tea.Batch(cmds...)
+	case filter.CancelMsg:
+		m = m.recalcTableHeight()
+		return m, nil
+	}
+
 	// While the filter bar is active, route all input to it.
 	if m.filterBar.Active() {
 		var cmd tea.Cmd
 		m.filterBar, cmd = m.filterBar.Update(msg)
-		cmds = append(cmds, cmd)
-		switch msg := msg.(type) {
-		case filter.SubmitMsg:
-			m.apiFilter = msg.Filter
-			m.loading = true
-			cmds = append(cmds, m.doFetch())
-			m = m.recalcTableHeight()
-		case filter.CancelMsg:
-			m = m.recalcTableHeight()
-		}
-		return m, tea.Batch(cmds...)
+		return m, cmd
 	}
 
 	switch msg := msg.(type) {
@@ -219,7 +224,7 @@ func (m ListModel) buildRows() []table.Row {
 		doneCell := fmt.Sprintf("%d/%d", j.NumDone, j.NumTasks)
 		errCell := ""
 		if j.NumError > 0 {
-			errCell = styles.ErrorStyle.Render(fmt.Sprintf("%d", j.NumError))
+			errCell = styles.ErrorStyle.Inline(true).Render(fmt.Sprintf("%d", j.NumError))
 		}
 		rows = append(rows, table.Row{
 			fmt.Sprintf("%d", j.JID),
@@ -290,6 +295,9 @@ func newTable(width, height int) table.Model {
 		Foreground(lipgloss.Color("229")).
 		Background(lipgloss.Color("57")).
 		Bold(false)
+	// Explicitly set cell foreground so unselected rows are not left to the
+	// terminal default (which appears dim/grey on many dark themes).
+	s.Cell = s.Cell.Foreground(lipgloss.Color("252"))
 	t.SetStyles(s)
 	return t
 }

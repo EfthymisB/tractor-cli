@@ -35,19 +35,22 @@ var (
 )
 
 // StatusColor returns a pre-built style for the given Tractor status string.
+// Inline(true) keeps the ANSI sequence self-contained so it doesn't bleed
+// into adjacent table cells when rendered inside a bubbles/table row.
 func StatusColor(status string) lipgloss.Style {
+	base := lipgloss.NewStyle().Inline(true)
 	switch status {
 	case "active":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+		return base.Foreground(lipgloss.Color("10"))
 	case "error":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+		return base.Foreground(lipgloss.Color("9"))
 	case "done":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+		return base.Foreground(lipgloss.Color("240"))
 	case "blocked":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+		return base.Foreground(lipgloss.Color("11"))
 	case "paused":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+		return base.Foreground(lipgloss.Color("14"))
 	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+		return base.Foreground(lipgloss.Color("252"))
 	}
 }
