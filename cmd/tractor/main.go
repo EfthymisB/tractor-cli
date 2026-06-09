@@ -44,7 +44,7 @@ func runSanityCheck(cmd *cobra.Command, args []string) error {
 	if err := client.Login(cfg.Auth.Username, password); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
-	fmt.Println("Authenticated successfully.")
+	fmt.Printf("Authenticated successfully (tsid: %s).\n", client.TSID())
 
 	jobs, err := client.QueryJobs(api.JobFilter{})
 	if err != nil {

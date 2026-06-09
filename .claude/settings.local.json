@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(New-Item -ItemType Directory -Force \"E:\\\\tractor_cli\\\\cmd\\\\tractor\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"E:\\\\tractor_cli\\\\internal\\\\api\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"E:\\\\tractor_cli\\\\internal\\\\config\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"E:\\\\tractor_cli\\\\internal\\\\models\")",
+      "PowerShell(Get-ChildItem \"E:\\\\tractor_cli\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName)"
+    ]
+  }
+}

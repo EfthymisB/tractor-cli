@@ -1,70 +1,74 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 )
 
-// cmdRequest is the JSON body for /tractor/cmd.
-type cmdRequest struct {
-	JID    int    `json:"jid"`
-	TID    int    `json:"tid,omitempty"`
-	Action string `json:"action"`
-}
-
-// cmdResponse is the response envelope from /tractor/cmd.
-type cmdResponse struct {
-	RC  int    `json:"rc"`
-	Msg string `json:"msg"`
-}
-
-func (c *Client) sendCommand(req cmdRequest) error {
-	b, err := c.postJSON("/tractor/cmd", req)
+// queueCmd sends a command to /Tractor/queue with the given parameters.
+func (c *Client) queueCmd(params map[string]string) error {
+	p := c.authenticatedParams()
+	for k, v := range params {
+		p.Set(k, v)
+	}
+	b, err := c.get("/Tractor/queue", p)
 	if err != nil {
 		return err
 	}
-	var resp cmdResponse
-	if err := json.Unmarshal(b, &resp); err != nil {
-		// Non-JSON response — treat as success.
-		return nil
-	}
-	if resp.RC != 0 {
-		return fmt.Errorf("command %s failed (rc=%d): %s", req.Action, resp.RC, resp.Msg)
-	}
-	return nil
+	return parseRC(b)
 }
 
 // RetryJob retries all errored tasks in a job.
+// Reference: GET /Tractor/queue?q=jretry&jid=NNN&tsubset=error&tsid=SSS
 func (c *Client) RetryJob(jid int) error {
-	return c.sendCommand(cmdRequest{JID: jid, Action: "jretry"})
+	return c.queueCmd(map[string]string{
+		"q": "jretry", "jid": fmt.Sprintf("%d", jid), "tsubset": "error",
+	})
 }
 
-// KillJob kills (pauses) a running job.
+// KillJob interrupts a running job, killing active tasks and pausing dispatching.
+// Reference: GET /Tractor/queue?q=jinterrupt&jid=NNN&tsid=SSS
 func (c *Client) KillJob(jid int) error {
-	return c.sendCommand(cmdRequest{JID: jid, Action: "jkill"})
+	return c.queueCmd(map[string]string{
+		"q": "jinterrupt", "jid": fmt.Sprintf("%d", jid),
+	})
 }
 
-// DeleteJob deletes a job.
+// DeleteJob retires (deletes) a job from the active queue.
+// Reference: GET /Tractor/queue?q=jretire&jid=NNN&tsid=SSS
 func (c *Client) DeleteJob(jid int) error {
-	return c.sendCommand(cmdRequest{JID: jid, Action: "jdelete"})
+	return c.queueCmd(map[string]string{
+		"q": "jretire", "jid": fmt.Sprintf("%d", jid),
+	})
 }
 
 // SkipJob skips all errored tasks in a job.
+// Reference: GET /Tractor/queue?q=tskip&jid=NNN&tid=error&tsid=SSS
 func (c *Client) SkipJob(jid int) error {
-	return c.sendCommand(cmdRequest{JID: jid, Action: "jskip"})
+	return c.queueCmd(map[string]string{
+		"q": "tskip", "jid": fmt.Sprintf("%d", jid), "tid": "error",
+	})
 }
 
 // RetryTask retries a specific task.
+// Reference: GET /Tractor/queue?q=jretry&jid=NNN&tsubset=TID&tsid=SSS
 func (c *Client) RetryTask(jid, tid int) error {
-	return c.sendCommand(cmdRequest{JID: jid, TID: tid, Action: "tretry"})
+	return c.queueCmd(map[string]string{
+		"q": "jretry", "jid": fmt.Sprintf("%d", jid), "tsubset": fmt.Sprintf("%d", tid),
+	})
 }
 
 // SkipTask skips a specific task.
+// Reference: GET /Tractor/queue?q=tskip&jid=NNN&tid=TID&tsid=SSS
 func (c *Client) SkipTask(jid, tid int) error {
-	return c.sendCommand(cmdRequest{JID: jid, TID: tid, Action: "tskip"})
+	return c.queueCmd(map[string]string{
+		"q": "tskip", "jid": fmt.Sprintf("%d", jid), "tid": fmt.Sprintf("%d", tid),
+	})
 }
 
-// KillTask kills a running task.
+// KillTask interrupts a specific task.
+// Reference: GET /Tractor/queue?q=jinterrupt&jid=NNN&tid=TID&tsid=SSS
 func (c *Client) KillTask(jid, tid int) error {
-	return c.sendCommand(cmdRequest{JID: jid, TID: tid, Action: "tkill"})
+	return c.queueCmd(map[string]string{
+		"q": "jinterrupt", "jid": fmt.Sprintf("%d", jid), "tid": fmt.Sprintf("%d", tid),
+	})
 }

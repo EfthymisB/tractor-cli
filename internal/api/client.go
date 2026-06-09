@@ -7,37 +7,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"time"
 )
 
-// Client is a Tractor API client. It holds the base URL and session cookie jar.
+// Client is a Tractor API client. It holds the base URL and session token (tsid).
 type Client struct {
 	baseURL    string
+	tsid       string
 	httpClient *http.Client
 }
 
-// queryResponse is the envelope returned by all /tractor/query calls.
-type queryResponse struct {
-	RC   int               `json:"rc"`
-	Msg  string            `json:"msg"`
-	Data []json.RawMessage `json:"data"`
-}
-
 // NewClient creates a new API client for the given base URL (e.g. "http://host:80").
+// Call Login before making authenticated requests.
 func NewClient(baseURL string) (*Client, error) {
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating cookie jar: %w", err)
-	}
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Jar:     jar,
 			Timeout: 30 * time.Second,
 		},
 	}, nil
+}
+
+// TSID returns the current session token, or empty string if not logged in.
+func (c *Client) TSID() string {
+	return c.tsid
 }
 
 // get performs a GET request and returns the raw response body.
@@ -62,23 +56,6 @@ func (c *Client) get(path string, params url.Values) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
 	}
 	return body, nil
-}
-
-// postForm performs a POST request with a form-encoded body and returns the raw response.
-func (c *Client) postForm(path string, body url.Values) ([]byte, error) {
-	resp, err := c.httpClient.PostForm(c.baseURL+path, body)
-	if err != nil {
-		return nil, fmt.Errorf("POST %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
-	}
-	return b, nil
 }
 
 // postJSON performs a POST request with a JSON body and returns the raw response.
@@ -107,22 +84,11 @@ func (c *Client) postJSON(path string, payload any) ([]byte, error) {
 	return b, nil
 }
 
-// query executes a TQL query and returns raw JSON data items.
-func (c *Client) query(tql string, columns string) ([]json.RawMessage, error) {
-	params := url.Values{"q": {tql}}
-	if columns != "" {
-		params.Set("columns", columns)
+// authenticatedParams returns a url.Values pre-populated with the session tsid.
+func (c *Client) authenticatedParams() url.Values {
+	p := url.Values{}
+	if c.tsid != "" {
+		p.Set("tsid", c.tsid)
 	}
-	body, err := c.get("/tractor/query", params)
-	if err != nil {
-		return nil, err
-	}
-	var qr queryResponse
-	if err := json.Unmarshal(body, &qr); err != nil {
-		return nil, fmt.Errorf("parsing query response: %w", err)
-	}
-	if qr.RC != 0 {
-		return nil, fmt.Errorf("TQL error (rc=%d): %s", qr.RC, qr.Msg)
-	}
-	return qr.Data, nil
+	return p
 }
