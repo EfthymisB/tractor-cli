@@ -21,6 +21,13 @@ type JobFilter struct {
 	Title  string
 }
 
+// RawJobsResponse returns the raw JSON body of /Tractor/monitor?q=jobs for debugging.
+func (c *Client) RawJobsResponse() ([]byte, error) {
+	params := c.authenticatedParams()
+	params.Set("q", "jobs")
+	return c.get("/Tractor/monitor", params)
+}
+
 // QueryJobs returns jobs from the engine, optionally filtered by owner.
 // Reference: GET /Tractor/monitor?q=jobs&owner=NAME&tsid=SSS
 func (c *Client) QueryJobs(filter JobFilter) ([]models.Job, error) {

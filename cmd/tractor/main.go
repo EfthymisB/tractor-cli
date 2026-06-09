@@ -14,11 +14,15 @@ import (
 
 func main() {
 	var sanity bool
+	var raw bool
 
 	root := &cobra.Command{
 		Use:   "tractor",
 		Short: "Interactive TUI for Pixar Tractor render farm",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if raw {
+				return runRaw()
+			}
 			if sanity {
 				return runSanityCheck()
 			}
@@ -26,6 +30,7 @@ func main() {
 		},
 	}
 	root.Flags().BoolVar(&sanity, "sanity", false, "print jobs to stdout and exit (Phase 1 smoke test)")
+	root.Flags().BoolVar(&raw, "raw", false, "print raw JSON from /Tractor/monitor?q=jobs and exit")
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -62,6 +67,20 @@ func runTUI() error {
 	)
 	_, err = p.Run()
 	return err
+}
+
+func runRaw() error {
+	client, cfg, err := buildClient()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Connected as %s\n\n", cfg.Auth.Username)
+	raw, err := client.RawJobsResponse()
+	if err != nil {
+		return fmt.Errorf("fetching jobs: %w", err)
+	}
+	fmt.Println(string(raw))
+	return nil
 }
 
 func runSanityCheck() error {
