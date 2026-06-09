@@ -319,14 +319,14 @@ func makeColumns(width int) []table.Column {
 	}
 }
 
-// formatTime tries to parse s as a Unix timestamp float and format it.
+// formatTime parses Tractor's "2006-01-02 15:04:05" spooldate and reformats it.
 // Falls back to the raw string if parsing fails.
 func formatTime(s, format string) string {
 	if s == "" {
 		return ""
 	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return time.Unix(int64(f), 0).Local().Format(format)
+	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local); err == nil {
+		return t.Format(format)
 	}
 	return s
 }
