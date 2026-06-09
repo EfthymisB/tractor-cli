@@ -56,6 +56,44 @@ func (r rawJobData) toJob() models.Job {
 	}
 }
 
+// selectJobRow mirrors the flat row format returned by q=select&table=Job.
+// Field names match raw database column names (not the jobinfo view aliases).
+type selectJobRow struct {
+	JID       int     `json:"jid"`
+	Title     string  `json:"title"`
+	Owner     string  `json:"owner"`
+	Priority  float64 `json:"priority"`
+	SpoolTime string  `json:"spooltime"` // full Postgres timestamp; first 19 chars match our parse format
+	NumActive int     `json:"numactive"`
+	NumDone   int     `json:"numdone"`
+	NumTasks  int     `json:"numtasks"`
+	NumError  int     `json:"numerror"`
+	// pausetime is a Postgres timestamp when paused, null otherwise.
+	PauseTime interface{} `json:"pausetime"`
+}
+
+func (r selectJobRow) toJob() models.Job {
+	paused := 0
+	if r.PauseTime != nil {
+		paused = 1
+	}
+	spoolDate := r.SpoolTime
+	if len(spoolDate) >= 19 {
+		spoolDate = spoolDate[:19]
+	}
+	return models.Job{
+		JID:       r.JID,
+		Title:     r.Title,
+		Owner:     r.Owner,
+		Status:    deriveStatus(paused, r.NumActive, r.NumDone, r.NumTasks, r.NumError),
+		Priority:  r.Priority,
+		SpoolTime: spoolDate,
+		NumTasks:  r.NumTasks,
+		NumDone:   r.NumDone,
+		NumError:  r.NumError,
+	}
+}
+
 // deriveStatus maps Tractor's internal nTasks counts to a human-readable status.
 func deriveStatus(paused, numActive, numDone, numTotal, numError int) string {
 	if paused == 1 {
@@ -73,9 +111,23 @@ func deriveStatus(paused, numActive, numDone, numTotal, numError int) string {
 	return "blocked"
 }
 
-// QueryJobs returns jobs from the engine, optionally filtered by owner.
-// Response shape: {"users": {"username": {"jid_str": {"data": {...}}}}}
+// QueryJobs returns jobs from the engine, optionally filtered.
+// When any filter is set it uses q=select (table-level query, limit 25 000) so
+// results are not capped by the engine's default q=jobs limit (~2 500).
+// Falls back to q=jobs if q=select returns an error or unexpected payload.
 func (c *Client) QueryJobs(filter JobFilter) ([]models.Job, error) {
+	if filter.Owner != "" || filter.Status != "" || filter.Title != "" {
+		jobs, err := c.queryJobsSelect(filter)
+		if err == nil {
+			return jobs, nil
+		}
+		// fall through to q=jobs on failure
+	}
+	return c.queryJobsList(filter)
+}
+
+// queryJobsList uses q=jobs (nested users→jid envelope, default engine limit).
+func (c *Client) queryJobsList(filter JobFilter) ([]models.Job, error) {
 	params := c.authenticatedParams()
 	params.Set("q", "jobs")
 	if filter.Owner != "" {
@@ -84,17 +136,16 @@ func (c *Client) QueryJobs(filter JobFilter) ([]models.Job, error) {
 
 	b, err := c.get("/Tractor/monitor", params)
 	if err != nil {
-		return nil, fmt.Errorf("QueryJobs: %w", err)
+		return nil, fmt.Errorf("queryJobsList: %w", err)
 	}
 
-	// Parse the nested envelope.
 	var envelope struct {
 		Users map[string]map[string]struct {
 			Data rawJobData `json:"data"`
 		} `json:"users"`
 	}
 	if err := json.Unmarshal(b, &envelope); err != nil {
-		return nil, fmt.Errorf("QueryJobs: parsing response: %w", err)
+		return nil, fmt.Errorf("queryJobsList: parsing response: %w", err)
 	}
 
 	jobs := make([]models.Job, 0)
@@ -104,20 +155,95 @@ func (c *Client) QueryJobs(filter JobFilter) ([]models.Job, error) {
 		}
 	}
 
-	// Client-side filtering for status and title.
-	if filter.Status != "" || filter.Title != "" {
-		filtered := jobs[:0]
-		for _, j := range jobs {
-			if filter.Status != "" && j.Status != filter.Status {
-				continue
-			}
-			if filter.Title != "" && !strings.Contains(strings.ToLower(j.Title), strings.ToLower(filter.Title)) {
-				continue
-			}
-			filtered = append(filtered, j)
-		}
-		jobs = filtered
+	// Client-side filter for status and title (q=jobs doesn't support them server-side).
+	return applyClientFilters(jobs, filter), nil
+}
+
+// queryJobsSelect uses q=select&table=Job for filtered queries with a high row
+// limit. This bypasses the engine's default q=jobs result cap.
+func (c *Client) queryJobsSelect(filter JobFilter) ([]models.Job, error) {
+	params := c.authenticatedParams()
+	params.Set("q", "select")
+	params.Set("table", "Job")
+	params.Set("limit", "25000")
+	params.Set("orderby", "jid desc")
+
+	if where := buildSelectWhere(filter); where != "" {
+		params.Set("where", where)
 	}
 
+	b, err := c.get("/Tractor/monitor", params)
+	if err != nil {
+		return nil, fmt.Errorf("queryJobsSelect: %w", err)
+	}
+
+	var resp struct {
+		RC   int            `json:"rc"`
+		Rows []selectJobRow `json:"rows"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return nil, fmt.Errorf("queryJobsSelect: parsing response: %w", err)
+	}
+	if resp.RC != 0 {
+		return nil, fmt.Errorf("queryJobsSelect: engine returned rc=%d", resp.RC)
+	}
+	if resp.Rows == nil {
+		return nil, fmt.Errorf("queryJobsSelect: no rows field in response")
+	}
+
+	jobs := make([]models.Job, 0, len(resp.Rows))
+	for _, r := range resp.Rows {
+		jobs = append(jobs, r.toJob())
+	}
 	return jobs, nil
+}
+
+// buildSelectWhere converts a JobFilter into a Tractor tractorselect WHERE clause.
+// Tractor WHERE syntax: field='value', aliases like "active", "error", title like '%foo%'.
+func buildSelectWhere(f JobFilter) string {
+	var parts []string
+	if f.Owner != "" {
+		// escape single quotes in username to prevent query breakage
+		safe := strings.ReplaceAll(f.Owner, "'", "''")
+		parts = append(parts, fmt.Sprintf("owner='%s'", safe))
+	}
+	if f.Status != "" {
+		switch f.Status {
+		case "active":
+			parts = append(parts, "active")
+		case "error":
+			parts = append(parts, "error")
+		case "done":
+			parts = append(parts, "done")
+		case "blocked":
+			parts = append(parts, "blocked")
+		case "paused":
+			parts = append(parts, "pausetime is not null")
+		}
+	}
+	if f.Title != "" {
+		safe := strings.ReplaceAll(f.Title, "'", "''")
+		safe = strings.ReplaceAll(safe, "%", "\\%")
+		safe = strings.ReplaceAll(safe, "_", "\\_")
+		parts = append(parts, fmt.Sprintf("title like '%%%s%%'", safe))
+	}
+	return strings.Join(parts, " and ")
+}
+
+// applyClientFilters does local filtering for status and title on a job slice.
+func applyClientFilters(jobs []models.Job, filter JobFilter) []models.Job {
+	if filter.Status == "" && filter.Title == "" {
+		return jobs
+	}
+	out := jobs[:0]
+	for _, j := range jobs {
+		if filter.Status != "" && j.Status != filter.Status {
+			continue
+		}
+		if filter.Title != "" && !strings.Contains(strings.ToLower(j.Title), strings.ToLower(filter.Title)) {
+			continue
+		}
+		out = append(out, j)
+	}
+	return out
 }

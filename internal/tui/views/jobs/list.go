@@ -3,6 +3,7 @@ package jobs
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,19 @@ import (
 type jobsLoadedMsg struct{ jobs []models.Job }
 type fetchErrMsg struct{ err error }
 
+// column indices — must match the order in makeColumns.
+const (
+	colJID     = 0
+	colTitle   = 1
+	colOwner   = 2
+	colStatus  = 3
+	colDone    = 4
+	colErr     = 5
+	colPri     = 6
+	colSpooled = 7
+	numCols    = 8
+)
+
 // ListModel is the jobs list view model.
 type ListModel struct {
 	table     table.Model
@@ -30,7 +44,7 @@ type ListModel struct {
 	filterBar filter.Model
 
 	allJobs []models.Job // full set returned by API
-	jobs    []models.Job // after local filters applied
+	jobs    []models.Job // after local filters + sort applied
 
 	loading     bool
 	lastRefresh time.Time
@@ -39,6 +53,9 @@ type ListModel struct {
 	apiFilter api.JobFilter // sent to the API
 	myJobs    bool          // 'm' toggle — pre-fill owner filter
 	errOnly   bool          // 'e' toggle — local-filter to error jobs
+
+	sortCol int  // column index; default colJID
+	sortAsc bool // ascending; default false (newest JIDs first)
 
 	client *api.Client
 	cfg    *config.Config
@@ -53,11 +70,13 @@ func New(client *api.Client, cfg *config.Config) ListModel {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
 
 	return ListModel{
-		table:     newTable(0, 0),
+		table:     newTable(0, 0, colJID, false),
 		spinner:   sp,
 		filterBar: filter.New(),
 		client:    client,
 		cfg:       cfg,
+		sortCol:   colJID,
+		sortAsc:   false, // newest first
 	}
 }
 
@@ -99,6 +118,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		m.err = nil
 		m.allJobs = msg.jobs
 		m.jobs = m.applyLocalFilters(msg.jobs)
+		m.sortJobs()
 		m.table.SetRows(m.buildRows())
 
 	case fetchErrMsg:
@@ -131,12 +151,26 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		case "e":
 			m.errOnly = !m.errOnly
 			m.jobs = m.applyLocalFilters(m.allJobs)
+			m.sortJobs()
 			m.table.SetRows(m.buildRows())
 			return m, nil
 		case "R":
 			m.loading = true
 			cmds = append(cmds, m.doFetch())
 			return m, tea.Batch(cmds...)
+		case "1", "2", "3", "4", "5", "6", "7", "8":
+			col := int(msg.String()[0] - '1')
+			if m.sortCol == col {
+				m.sortAsc = !m.sortAsc
+			} else {
+				m.sortCol = col
+				// Default direction per column: JID desc (newest first), others asc.
+				m.sortAsc = col != colJID
+			}
+			m.sortJobs()
+			m.table.SetColumns(makeColumns(m.width, m.sortCol, m.sortAsc))
+			m.table.SetRows(m.buildRows())
+			return m, nil
 		}
 	}
 
@@ -170,16 +204,16 @@ func (m ListModel) Refresh() (ListModel, tea.Cmd) {
 func (m ListModel) SetSize(w, h int) ListModel {
 	m.width = w
 	m.height = h
-	m.table.SetColumns(makeColumns(w))
+	m.table.SetColumns(makeColumns(w, m.sortCol, m.sortAsc))
 	m = m.recalcTableHeight()
 	return m
 }
 
 // State accessors used by the root model for the status bar.
-func (m ListModel) JobCount() int         { return len(m.jobs) }
-func (m ListModel) IsLoading() bool       { return m.loading }
+func (m ListModel) JobCount() int          { return len(m.jobs) }
+func (m ListModel) IsLoading() bool        { return m.loading }
 func (m ListModel) LastRefresh() time.Time { return m.lastRefresh }
-func (m ListModel) Err() error            { return m.err }
+func (m ListModel) Err() error             { return m.err }
 
 // SelectedJID returns the JID of the currently highlighted row, or 0.
 func (m ListModel) SelectedJID() int {
@@ -187,7 +221,9 @@ func (m ListModel) SelectedJID() int {
 	if len(row) == 0 {
 		return 0
 	}
-	jid, _ := strconv.Atoi(row[0])
+	// Strip ANSI codes before parsing — cell content is coloured.
+	raw := stripANSI(row[0])
+	jid, _ := strconv.Atoi(raw)
 	return jid
 }
 
@@ -217,24 +253,62 @@ func (m ListModel) applyLocalFilters(src []models.Job) []models.Job {
 	return out
 }
 
+// sortJobs sorts m.jobs in-place according to sortCol/sortAsc.
+func (m *ListModel) sortJobs() {
+	col := m.sortCol
+	asc := m.sortAsc
+	sort.SliceStable(m.jobs, func(i, j int) bool {
+		a, b := m.jobs[i], m.jobs[j]
+		var less bool
+		switch col {
+		case colJID:
+			less = a.JID < b.JID
+		case colTitle:
+			less = strings.ToLower(a.Title) < strings.ToLower(b.Title)
+		case colOwner:
+			less = strings.ToLower(a.Owner) < strings.ToLower(b.Owner)
+		case colStatus:
+			less = a.Status < b.Status
+		case colDone:
+			less = a.NumDone < b.NumDone
+		case colErr:
+			less = a.NumError < b.NumError
+		case colPri:
+			less = a.Priority < b.Priority
+		case colSpooled:
+			less = a.SpoolTime < b.SpoolTime
+		default:
+			less = a.JID < b.JID
+		}
+		if asc {
+			return less
+		}
+		return !less
+	})
+}
+
 func (m ListModel) buildRows() []table.Row {
 	rows := make([]table.Row, 0, len(m.jobs))
 	for _, j := range m.jobs {
-		statusCell := styles.StatusColor(j.Status).Render(j.Status)
+		st := styles.StatusColor(j.Status)
+
 		doneCell := fmt.Sprintf("%d/%d", j.NumDone, j.NumTasks)
 		errCell := ""
 		if j.NumError > 0 {
-			errCell = styles.ErrorStyle.Inline(true).Render(fmt.Sprintf("%d", j.NumError))
+			// Error count always in red regardless of row status colour.
+			errCell = lipgloss.NewStyle().Inline(true).Foreground(lipgloss.Color("9")).
+				Render(fmt.Sprintf("%d", j.NumError))
 		}
+
 		rows = append(rows, table.Row{
-			fmt.Sprintf("%d", j.JID),
-			j.Title,
-			j.Owner,
-			statusCell,
-			doneCell,
+			st.Render(fmt.Sprintf("%d", j.JID)),
+			st.Render(j.Title),
+			st.Render(j.Owner),
+			st.Render(j.Status),
+			st.Render(doneCell),
 			errCell,
-			fmt.Sprintf("%.0f", j.Priority),
-			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
+			st.Render(fmt.Sprintf("%.0f", j.Priority)),
+			st.Render(formatTime(j.SpoolTime, m.cfg.UI.DateFormat)),
 		})
 	}
 	return rows
@@ -279,9 +353,9 @@ func (m ListModel) recalcTableHeight() ListModel {
 }
 
 // newTable builds a fresh bubbles/table with our default styles.
-func newTable(width, height int) table.Model {
+func newTable(width, height, sortCol int, sortAsc bool) table.Model {
 	t := table.New(
-		table.WithColumns(makeColumns(width)),
+		table.WithColumns(makeColumns(width, sortCol, sortAsc)),
 		table.WithFocused(true),
 		table.WithHeight(height),
 	)
@@ -295,35 +369,48 @@ func newTable(width, height int) table.Model {
 		Foreground(lipgloss.Color("229")).
 		Background(lipgloss.Color("57")).
 		Bold(false)
-	// Explicitly set cell foreground so unselected rows are not left to the
-	// terminal default (which appears dim/grey on many dark themes).
-	s.Cell = s.Cell.Foreground(lipgloss.Color("252"))
+	// Reset cell foreground so per-row ANSI colour codes in cell content are
+	// not overridden by an outer lipgloss style.
+	s.Cell = lipgloss.NewStyle().Padding(0, 1)
 	t.SetStyles(s)
 	return t
 }
 
 // makeColumns calculates column widths to fit the given terminal width.
-// Fixed columns total 64 content chars + 16 padding (2 per col × 8 cols).
-func makeColumns(width int) []table.Column {
+// Fixed columns total ~74 content chars + 16 padding (2 per col × 8 cols) = 90.
+// The TITLE column gets whatever remains, clamped to 10..65.
+// The sorted column header gets a ▲/▼ indicator appended.
+func makeColumns(width, sortCol int, sortAsc bool) []table.Column {
 	titleWidth := 40
 	if width > 0 {
-		titleWidth = width - 80 // 80 = fixed cols + padding
+		titleWidth = width - 92 // 92 = fixed content (74) + padding (16) + title padding (2)
 		if titleWidth < 10 {
 			titleWidth = 10
 		}
-		if titleWidth > 55 {
-			titleWidth = 55
+		if titleWidth > 65 {
+			titleWidth = 65
 		}
 	}
+
+	indicator := func(col int, name string) string {
+		if col != sortCol {
+			return name
+		}
+		if sortAsc {
+			return name + " ▲"
+		}
+		return name + " ▼"
+	}
+
 	return []table.Column{
-		{Title: "JID", Width: 6},
-		{Title: "TITLE", Width: titleWidth},
-		{Title: "OWNER", Width: 10},
-		{Title: "STATUS", Width: 9},
-		{Title: "DONE", Width: 7},
-		{Title: "ERR", Width: 5},
-		{Title: "PRI", Width: 5},
-		{Title: "SPOOLED", Width: 14},
+		{Title: indicator(colJID, "JID"), Width: 8},
+		{Title: indicator(colTitle, "TITLE"), Width: titleWidth},
+		{Title: indicator(colOwner, "OWNER"), Width: 13},
+		{Title: indicator(colStatus, "STATUS"), Width: 12},
+		{Title: indicator(colDone, "DONE"), Width: 9},
+		{Title: indicator(colErr, "ERR"), Width: 7},
+		{Title: indicator(colPri, "PRI"), Width: 7},
+		{Title: indicator(colSpooled, "SPOOLED"), Width: 18},
 	}
 }
 
@@ -337,4 +424,26 @@ func formatTime(s, format string) string {
 		return t.Format(format)
 	}
 	return s
+}
+
+// stripANSI removes ANSI escape sequences from s.
+// Used when reading cell values that contain colour codes.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
