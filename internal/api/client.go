@@ -11,9 +11,11 @@ import (
 	"time"
 )
 
-// Client is a Tractor API client. It holds the base URL and session token (tsid).
+// Client is a Tractor API client. It holds the base URL, session token (tsid),
+// and username (sent as TractorUser cookie on every request).
 type Client struct {
 	baseURL    string
+	username   string
 	tsid       string
 	httpClient *http.Client
 }
@@ -34,18 +36,15 @@ func (c *Client) TSID() string {
 	return c.tsid
 }
 
-// get performs a GET request and returns the raw response body.
-func (c *Client) get(path string, params url.Values) ([]byte, error) {
-	u, err := url.Parse(c.baseURL + path)
-	if err != nil {
-		return nil, err
+// do performs an HTTP request, injecting the TractorUser cookie and returning
+// the raw response body.
+func (c *Client) do(req *http.Request) ([]byte, error) {
+	if c.username != "" {
+		req.AddCookie(&http.Cookie{Name: "TractorUser", Value: c.username})
 	}
-	if params != nil {
-		u.RawQuery = params.Encode()
-	}
-	resp, err := c.httpClient.Get(u.String())
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", u.String(), err)
+		return nil, fmt.Errorf("%s %s: %w", req.Method, req.URL, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -56,6 +55,22 @@ func (c *Client) get(path string, params url.Values) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
 	}
 	return body, nil
+}
+
+// get performs a GET request and returns the raw response body.
+func (c *Client) get(path string, params url.Values) ([]byte, error) {
+	u, err := url.Parse(c.baseURL + path)
+	if err != nil {
+		return nil, err
+	}
+	if params != nil {
+		u.RawQuery = params.Encode()
+	}
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.do(req)
 }
 
 // postJSON performs a POST request with a JSON body and returns the raw response.
@@ -69,19 +84,7 @@ func (c *Client) postJSON(path string, payload any) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("POST %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, b)
-	}
-	return b, nil
+	return c.do(req)
 }
 
 // authenticatedParams returns a url.Values pre-populated with the session tsid.
