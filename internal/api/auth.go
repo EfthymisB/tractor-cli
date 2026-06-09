@@ -14,12 +14,14 @@ type loginResponse struct {
 
 // Login authenticates with the Tractor engine and stores the session cookie in
 // the client's cookie jar. All subsequent API calls will send the cookie automatically.
+//
+// Tractor 2.x accepts credentials as GET query parameters on /tractor/login.
 func (c *Client) Login(username, password string) error {
-	body := url.Values{
+	params := url.Values{
 		"user":     {username},
 		"password": {password},
 	}
-	b, err := c.postForm("/tractor/login", body)
+	b, err := c.get("/tractor/login", params)
 	if err != nil {
 		return fmt.Errorf("login request: %w", err)
 	}
