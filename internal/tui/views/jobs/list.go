@@ -37,6 +37,7 @@ const (
 	colProjects  = 8
 	colSpoolHost = 9
 	colMetadata  = 10
+	numCols      = 11
 )
 
 // ListModel is the jobs list view model.
@@ -76,7 +77,7 @@ func New(client *api.Client, cfg *config.Config) ListModel {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
 
 	return ListModel{
-		table:     newTable(0, 0, colJID, false),
+		table:     newTable(),
 		spinner:   sp,
 		filterBar: filter.New(),
 		client:    client,
@@ -126,6 +127,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		m.jobs = m.applyLocalFilters(msg.jobs)
 		m.sortJobs()
 		m.topRow = 0
+		m.table.SetColumns(m.makeColumns())
 		m.table.SetRows(m.buildRows())
 
 	case fetchErrMsg:
@@ -160,6 +162,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			m.jobs = m.applyLocalFilters(m.allJobs)
 			m.sortJobs()
 			m.topRow = 0
+			m.table.SetColumns(m.makeColumns())
 			m.table.SetRows(m.buildRows())
 			return m, nil
 		case "R":
@@ -176,7 +179,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			}
 			m.sortJobs()
 			m.topRow = 0
-			m.table.SetColumns(makeColumns(m.width, m.sortCol, m.sortAsc))
+			m.table.SetColumns(m.makeColumns())
 			m.table.SetRows(m.buildRows())
 			return m, nil
 		}
@@ -217,7 +220,7 @@ func (m ListModel) Refresh() (ListModel, tea.Cmd) {
 func (m ListModel) SetSize(w, h int) ListModel {
 	m.width = w
 	m.height = h
-	m.table.SetColumns(makeColumns(w, m.sortCol, m.sortAsc))
+	m.table.SetColumns(m.makeColumns())
 	m = m.recalcTableHeight()
 	return m
 }
@@ -435,13 +438,10 @@ func (m ListModel) recalcTableHeight() ListModel {
 	return m
 }
 
-// newTable builds a fresh bubbles/table with our default styles.
-func newTable(width, height, sortCol int, sortAsc bool) table.Model {
-	t := table.New(
-		table.WithColumns(makeColumns(width, sortCol, sortAsc)),
-		table.WithFocused(true),
-		table.WithHeight(height),
-	)
+// newTable builds a fresh bubbles/table with our styles. Columns are set later
+// via makeColumns() once the terminal size and job data are known.
+func newTable() table.Model {
+	t := table.New(table.WithFocused(true))
 	s := table.DefaultStyles()
 	s.Header = s.Header.
 		BorderStyle(lipgloss.NormalBorder()).
@@ -458,49 +458,99 @@ func newTable(width, height, sortCol int, sortAsc bool) table.Model {
 	return t
 }
 
-// makeColumns calculates column widths to fit the given terminal width.
+// makeColumns computes column widths by scanning the current job data so that
+// every column (except TITLE) is exactly as wide as its widest value or
+// header, whichever is larger. TITLE gets whatever terminal width remains.
 //
-// Fixed columns (content + 2-char padding each):
-//   JID(8) OWNER(13) STATUS(12) DONE(9) ERR(7) PRI(7) SPOOLED(18)
-//   PROJECTS(15) SPOOLHOST(16) METADATA(22)  → 127 content + 22 padding = 149
-//
-// TITLE gets whatever remains, clamped to 10..65.
-// The sorted column header gets a ▲/▼ indicator appended.
-func makeColumns(width, sortCol int, sortAsc bool) []table.Column {
-	titleWidth := 40
-	if width > 0 {
-		titleWidth = width - 151 // 151 = fixed content (127) + padding (22) + title padding (2)
-		if titleWidth < 10 {
-			titleWidth = 10
+// Per-column hard caps prevent runaway widths on outlier data.
+// The sorted column gets a ▲/▼ appended to its header title.
+func (m ListModel) makeColumns() []table.Column {
+	// header names in column order
+	names := [numCols]string{
+		"JID", "TITLE", "OWNER", "STATUS", "DONE",
+		"ERR", "PRI", "SPOOLED", "PROJECTS", "SPOOLHOST", "METADATA",
+	}
+	// hard caps on content width (0 = no cap)
+	caps := [numCols]int{0, 0, 20, 0, 0, 0, 0, 0, 25, 25, 35}
+
+	// Start with the header width as the minimum content width.
+	widths := [numCols]int{}
+	for i, n := range names {
+		widths[i] = len(n)
+	}
+	// The sort indicator " ▲" / " ▼" adds 2 visible chars to that column's header.
+	if m.sortCol >= 0 && m.sortCol < numCols {
+		widths[m.sortCol] += 2
+	}
+
+	// Grow each column to fit its actual data (TITLE excluded — it fills the gap).
+	for _, j := range m.jobs {
+		errStr := ""
+		if j.NumError > 0 {
+			errStr = strconv.Itoa(j.NumError)
 		}
-		if titleWidth > 65 {
-			titleWidth = 65
+		cells := [numCols]string{
+			strconv.Itoa(j.JID),
+			"", // TITLE: excluded from auto-resize
+			j.Owner,
+			j.Status,
+			fmt.Sprintf("%d/%d", j.NumDone, j.NumTasks),
+			errStr,
+			fmt.Sprintf("%.0f", j.Priority),
+			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
+			j.Projects,
+			j.SpoolHost,
+			j.Metadata,
+		}
+		for col, cell := range cells {
+			if col == colTitle {
+				continue
+			}
+			if w := len([]rune(cell)); w > widths[col] {
+				widths[col] = w
+			}
 		}
 	}
 
-	indicator := func(col int, name string) string {
-		if col != sortCol {
-			return name
+	// Apply hard caps.
+	for col := range widths {
+		if col == colTitle {
+			continue
 		}
-		if sortAsc {
-			return name + " ▲"
+		if caps[col] > 0 && widths[col] > caps[col] {
+			widths[col] = caps[col]
 		}
-		return name + " ▼"
 	}
 
-	return []table.Column{
-		{Title: indicator(colJID, "JID"), Width: 8},
-		{Title: indicator(colTitle, "TITLE"), Width: titleWidth},
-		{Title: indicator(colOwner, "OWNER"), Width: 13},
-		{Title: indicator(colStatus, "STATUS"), Width: 12},
-		{Title: indicator(colDone, "DONE"), Width: 9},
-		{Title: indicator(colErr, "ERR"), Width: 7},
-		{Title: indicator(colPri, "PRI"), Width: 7},
-		{Title: indicator(colSpooled, "SPOOLED"), Width: 18},
-		{Title: indicator(colProjects, "PROJECTS"), Width: 15},
-		{Title: indicator(colSpoolHost, "SPOOLHOST"), Width: 16},
-		{Title: indicator(colMetadata, "METADATA"), Width: 22},
+	// TITLE = terminal width minus all other columns (content + 2 padding each).
+	fixedTotal := 0
+	for col, w := range widths {
+		if col != colTitle {
+			fixedTotal += w + 2
+		}
 	}
+	titleContent := m.width - fixedTotal - 2 // -2 for TITLE's own padding
+	if titleContent < 10 {
+		titleContent = 10
+	}
+	widths[colTitle] = titleContent
+
+	// Build the column slice.
+	colTitle_ := func(col int) string {
+		if col != m.sortCol {
+			return names[col]
+		}
+		if m.sortAsc {
+			return names[col] + " ▲"
+		}
+		return names[col] + " ▼"
+	}
+
+	cols := make([]table.Column, numCols)
+	for col := range cols {
+		cols[col] = table.Column{Title: colTitle_(col), Width: widths[col] + 2}
+	}
+	return cols
 }
 
 // formatTime parses Tractor's "2006-01-02 15:04:05" spooldate and reformats it.
