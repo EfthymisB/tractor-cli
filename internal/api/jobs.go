@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/tractor-cli/tractor-cli/internal/models"
@@ -24,13 +25,16 @@ type JobFilter struct {
 
 // rawJobData mirrors the actual JSON shape inside each job's "data" object.
 type rawJobData struct {
-	JID      int     `json:"jid"`
-	Title    string  `json:"title"`
-	User     string  `json:"user"`
-	State    string  `json:"state"`
-	Priority float64 `json:"priority"`
-	SpoolDate string `json:"spooldate"`
-	Paused   int     `json:"paused"`
+	JID       int         `json:"jid"`
+	Title     string      `json:"title"`
+	User      string      `json:"user"`
+	State     string      `json:"state"`
+	Priority  float64     `json:"priority"`
+	SpoolDate string      `json:"spooldate"`
+	SpoolHost string      `json:"spoolhost"`
+	Paused    int         `json:"paused"`
+	Projects  interface{} `json:"projects"` // JSON array or null
+	Metadata  string      `json:"metadata"` // arbitrary text, may be JSON
 	// [total, active, done, error]
 	NTasks []int `json:"nTasks"`
 }
@@ -44,30 +48,36 @@ func (r rawJobData) toJob() models.Job {
 		numError = r.NTasks[3]
 	}
 	return models.Job{
-		JID:      r.JID,
-		Title:    r.Title,
-		Owner:    r.User,
-		Status:   deriveStatus(r.Paused, numActive, numDone, numTotal, numError),
-		Priority: r.Priority,
+		JID:       r.JID,
+		Title:     r.Title,
+		Owner:     r.User,
+		Status:    deriveStatus(r.Paused, numActive, numDone, numTotal, numError),
+		Priority:  r.Priority,
 		SpoolTime: r.SpoolDate,
-		NumTasks: numTotal,
-		NumDone:  numDone,
-		NumError: numError,
+		SpoolHost: r.SpoolHost,
+		Projects:  formatProjects(r.Projects),
+		Metadata:  formatMetadata(r.Metadata),
+		NumTasks:  numTotal,
+		NumDone:   numDone,
+		NumError:  numError,
 	}
 }
 
 // selectJobRow mirrors the flat row format returned by q=select&table=Job.
 // Field names match raw database column names (not the jobinfo view aliases).
 type selectJobRow struct {
-	JID       int     `json:"jid"`
-	Title     string  `json:"title"`
-	Owner     string  `json:"owner"`
-	Priority  float64 `json:"priority"`
-	SpoolTime string  `json:"spooltime"` // full Postgres timestamp; first 19 chars match our parse format
-	NumActive int     `json:"numactive"`
-	NumDone   int     `json:"numdone"`
-	NumTasks  int     `json:"numtasks"`
-	NumError  int     `json:"numerror"`
+	JID       int         `json:"jid"`
+	Title     string      `json:"title"`
+	Owner     string      `json:"owner"`
+	Priority  float64     `json:"priority"`
+	SpoolTime string      `json:"spooltime"` // full Postgres timestamp; first 19 chars match our parse format
+	SpoolHost string      `json:"spoolhost"`
+	NumActive int         `json:"numactive"`
+	NumDone   int         `json:"numdone"`
+	NumTasks  int         `json:"numtasks"`
+	NumError  int         `json:"numerror"`
+	Projects  interface{} `json:"projects"` // JSON array or null
+	Metadata  string      `json:"metadata"`
 	// pausetime is a Postgres timestamp when paused, null otherwise.
 	PauseTime interface{} `json:"pausetime"`
 }
@@ -88,6 +98,9 @@ func (r selectJobRow) toJob() models.Job {
 		Status:    deriveStatus(paused, r.NumActive, r.NumDone, r.NumTasks, r.NumError),
 		Priority:  r.Priority,
 		SpoolTime: spoolDate,
+		SpoolHost: r.SpoolHost,
+		Projects:  formatProjects(r.Projects),
+		Metadata:  formatMetadata(r.Metadata),
 		NumTasks:  r.NumTasks,
 		NumDone:   r.NumDone,
 		NumError:  r.NumError,
@@ -228,6 +241,49 @@ func buildSelectWhere(f JobFilter) string {
 		parts = append(parts, fmt.Sprintf("title like '%%%s%%'", safe))
 	}
 	return strings.Join(parts, " and ")
+}
+
+// formatProjects converts the Tractor projects StrArrayField (JSON array or
+// null) to a display string.  Multiple projects are joined with commas.
+func formatProjects(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case []interface{}:
+		parts := make([]string, 0, len(val))
+		for _, p := range val {
+			parts = append(parts, fmt.Sprintf("%v", p))
+		}
+		return strings.Join(parts, ",")
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// formatMetadata formats the metadata TextField for display.  When the value
+// is a JSON object (the common pipeline convention) the dict values are sorted
+// by key and joined with "/" — e.g. {"show":"film","seq":"abc","shot":"001"}
+// becomes "film/abc/001".  Plain strings are returned as-is.
+func formatMetadata(s string) string {
+	if s == "" {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(s), &m); err != nil || len(m) == 0 {
+		return s
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%v", m[k]))
+	}
+	return strings.Join(parts, "/")
 }
 
 // applyClientFilters does local filtering for status and title on a job slice.

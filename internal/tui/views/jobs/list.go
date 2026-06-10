@@ -26,14 +26,17 @@ type fetchErrMsg struct{ err error }
 
 // column indices — must match the order returned by makeColumns.
 const (
-	colJID     = 0
-	colTitle   = 1
-	colOwner   = 2
-	colStatus  = 3
-	colDone    = 4
-	colErr     = 5
-	colPri     = 6
-	colSpooled = 7
+	colJID       = 0
+	colTitle     = 1
+	colOwner     = 2
+	colStatus    = 3
+	colDone      = 4
+	colErr       = 5
+	colPri       = 6
+	colSpooled   = 7
+	colProjects  = 8
+	colSpoolHost = 9
+	colMetadata  = 10
 )
 
 // ListModel is the jobs list view model.
@@ -163,7 +166,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			m.loading = true
 			cmds = append(cmds, m.doFetch())
 			return m, tea.Batch(cmds...)
-		case "1", "2", "3", "4", "5", "6", "7", "8":
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			col := int(msg.String()[0] - '1')
 			if m.sortCol == col {
 				m.sortAsc = !m.sortAsc
@@ -284,6 +287,12 @@ func (m *ListModel) sortJobs() {
 			less = a.Priority < b.Priority
 		case colSpooled:
 			less = a.SpoolTime < b.SpoolTime
+		case colProjects:
+			less = a.Projects < b.Projects
+		case colSpoolHost:
+			less = a.SpoolHost < b.SpoolHost
+		case colMetadata:
+			less = a.Metadata < b.Metadata
 		default:
 			less = a.JID < b.JID
 		}
@@ -314,6 +323,9 @@ func (m ListModel) buildRows() []table.Row {
 			errCell,
 			fmt.Sprintf("%.0f", j.Priority),
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
+			j.Projects,
+			j.SpoolHost,
+			j.Metadata,
 		})
 	}
 	return rows
@@ -447,13 +459,17 @@ func newTable(width, height, sortCol int, sortAsc bool) table.Model {
 }
 
 // makeColumns calculates column widths to fit the given terminal width.
-// Fixed columns total ~74 content chars + 16 padding (2 per col × 8 cols) = 90.
-// The TITLE column gets whatever remains, clamped to 10..65.
-// The sorted column header gets a ▲/▼ indicator.
+//
+// Fixed columns (content + 2-char padding each):
+//   JID(8) OWNER(13) STATUS(12) DONE(9) ERR(7) PRI(7) SPOOLED(18)
+//   PROJECTS(15) SPOOLHOST(16) METADATA(22)  → 127 content + 22 padding = 149
+//
+// TITLE gets whatever remains, clamped to 10..65.
+// The sorted column header gets a ▲/▼ indicator appended.
 func makeColumns(width, sortCol int, sortAsc bool) []table.Column {
 	titleWidth := 40
 	if width > 0 {
-		titleWidth = width - 92 // 92 = fixed content (74) + padding (16) + title padding (2)
+		titleWidth = width - 151 // 151 = fixed content (127) + padding (22) + title padding (2)
 		if titleWidth < 10 {
 			titleWidth = 10
 		}
@@ -481,6 +497,9 @@ func makeColumns(width, sortCol int, sortAsc bool) []table.Column {
 		{Title: indicator(colErr, "ERR"), Width: 7},
 		{Title: indicator(colPri, "PRI"), Width: 7},
 		{Title: indicator(colSpooled, "SPOOLED"), Width: 18},
+		{Title: indicator(colProjects, "PROJECTS"), Width: 15},
+		{Title: indicator(colSpoolHost, "SPOOLHOST"), Width: 16},
+		{Title: indicator(colMetadata, "METADATA"), Width: 22},
 	}
 }
 
