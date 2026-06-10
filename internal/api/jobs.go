@@ -228,40 +228,55 @@ func (c *Client) queryJobsSelect(filter JobFilter) ([]models.Job, error) {
 }
 
 // buildSelectWhere converts a JobFilter into a Tractor tractorselect WHERE clause.
-// Projects is excluded — it is always handled client-side.
+//
+// Tractor uses a "natural language" query format (NOT SQL literal syntax):
+//   - String equality:  owner=alice       (no quotes; Tractor auto-quotes)
+//   - List match:       owner in [alice, bob]
+//   - Regex match:      title like nemo   (no % wildcards)
+//   - Numeric:          jid=2207510  priority=1000  jid>=1000 and jid<=2000
+//   - Status aliases:   active  error  done  blocked  (bare keywords)
+//
+// Projects is excluded — array-contains is not expressible here; handled client-side.
 func buildSelectWhere(f JobFilter) string {
 	var parts []string
 
-	// Owner(s) — OR'd together.
-	if len(f.Owners) == 1 {
-		safe := sqEsc(f.Owners[0])
-		parts = append(parts, fmt.Sprintf("owner='%s'", safe))
-	} else if len(f.Owners) > 1 {
-		orParts := make([]string, len(f.Owners))
-		for i, o := range f.Owners {
-			orParts[i] = fmt.Sprintf("owner='%s'", sqEsc(o))
-		}
-		parts = append(parts, "("+strings.Join(orParts, " or ")+")")
-	}
-
-	// JID(s) and/or range — OR'd together.
-	var jidParts []string
-	for _, jid := range f.JIDs {
-		jidParts = append(jidParts, fmt.Sprintf("jid=%d", jid))
-	}
-	if f.JIDFrom > 0 && f.JIDTo > 0 {
-		jidParts = append(jidParts, fmt.Sprintf("(jid>=%d and jid<=%d)", f.JIDFrom, f.JIDTo))
-	}
-	switch len(jidParts) {
+	// Owner(s).
+	switch len(f.Owners) {
 	case 1:
-		parts = append(parts, jidParts[0])
-	case 0:
-		// nothing
+		parts = append(parts, "owner="+f.Owners[0])
 	default:
-		parts = append(parts, "("+strings.Join(jidParts, " or ")+")")
+		if len(f.Owners) > 1 {
+			parts = append(parts, "owner in ["+strings.Join(f.Owners, ", ")+"]")
+		}
 	}
 
-	// Status (Tractor WHERE aliases).
+	// JID(s) and/or range.
+	hasJIDs := len(f.JIDs) > 0
+	hasRange := f.JIDFrom > 0 && f.JIDTo > 0
+	switch {
+	case hasJIDs && hasRange:
+		// Mixed: build an OR expression wrapped in parens.
+		jidStrs := make([]string, len(f.JIDs))
+		for i, id := range f.JIDs {
+			jidStrs[i] = strconv.Itoa(id)
+		}
+		parts = append(parts, fmt.Sprintf(
+			"(jid in [%s] or (jid>=%d and jid<=%d))",
+			strings.Join(jidStrs, ", "), f.JIDFrom, f.JIDTo,
+		))
+	case hasJIDs && len(f.JIDs) == 1:
+		parts = append(parts, fmt.Sprintf("jid=%d", f.JIDs[0]))
+	case hasJIDs:
+		jidStrs := make([]string, len(f.JIDs))
+		for i, id := range f.JIDs {
+			jidStrs[i] = strconv.Itoa(id)
+		}
+		parts = append(parts, "jid in ["+strings.Join(jidStrs, ", ")+"]")
+	case hasRange:
+		parts = append(parts, fmt.Sprintf("jid>=%d and jid<=%d", f.JIDFrom, f.JIDTo))
+	}
+
+	// Status (Tractor WHERE aliases — bare keywords, not SQL).
 	switch f.Status {
 	case "active":
 		parts = append(parts, "active")
@@ -275,17 +290,14 @@ func buildSelectWhere(f JobFilter) string {
 		parts = append(parts, "pausetime is not null")
 	}
 
-	// Priority — exact match.
+	// Priority — exact numeric match.
 	if f.Priority != 0 {
 		parts = append(parts, fmt.Sprintf("priority=%g", f.Priority))
 	}
 
-	// Title — substring via LIKE.
+	// Title — regex substring match via Tractor's 'like' operator.
 	if f.Title != "" {
-		safe := strings.ReplaceAll(f.Title, "'", "''")
-		safe = strings.ReplaceAll(safe, "%", "\\%")
-		safe = strings.ReplaceAll(safe, "_", "\\_")
-		parts = append(parts, fmt.Sprintf("title like '%%%s%%'", safe))
+		parts = append(parts, "title like "+f.Title)
 	}
 
 	return strings.Join(parts, " and ")
@@ -371,9 +383,6 @@ func matchesFilter(j models.Job, f JobFilter) bool {
 
 	return true
 }
-
-// sqEsc escapes single quotes for use in SQL string literals.
-func sqEsc(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
 // formatProjects converts the Tractor projects StrArrayField (JSON array or
 // null) to a display string.  Multiple projects are joined with commas.
