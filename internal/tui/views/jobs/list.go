@@ -24,7 +24,7 @@ import (
 type jobsLoadedMsg struct{ jobs []models.Job }
 type fetchErrMsg struct{ err error }
 
-// column indices — must match the order in makeColumns.
+// column indices — must match the order returned by makeColumns.
 const (
 	colJID     = 0
 	colTitle   = 1
@@ -34,7 +34,6 @@ const (
 	colErr     = 5
 	colPri     = 6
 	colSpooled = 7
-	numCols    = 8
 )
 
 // ListModel is the jobs list view model.
@@ -56,6 +55,10 @@ type ListModel struct {
 
 	sortCol int  // column index; default colJID
 	sortAsc bool // ascending; default false (newest JIDs first)
+
+	// topRow mirrors bubbles/table's internal viewport offset so that
+	// colorizeTable() can map rendered lines back to their job index.
+	topRow int
 
 	client *api.Client
 	cfg    *config.Config
@@ -119,6 +122,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		m.allJobs = msg.jobs
 		m.jobs = m.applyLocalFilters(msg.jobs)
 		m.sortJobs()
+		m.topRow = 0
 		m.table.SetRows(m.buildRows())
 
 	case fetchErrMsg:
@@ -152,6 +156,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			m.errOnly = !m.errOnly
 			m.jobs = m.applyLocalFilters(m.allJobs)
 			m.sortJobs()
+			m.topRow = 0
 			m.table.SetRows(m.buildRows())
 			return m, nil
 		case "R":
@@ -164,10 +169,10 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 				m.sortAsc = !m.sortAsc
 			} else {
 				m.sortCol = col
-				// Default direction per column: JID desc (newest first), others asc.
 				m.sortAsc = col != colJID
 			}
 			m.sortJobs()
+			m.topRow = 0
 			m.table.SetColumns(makeColumns(m.width, m.sortCol, m.sortAsc))
 			m.table.SetRows(m.buildRows())
 			return m, nil
@@ -179,6 +184,10 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 	m.table, tableCmd = m.table.Update(msg)
 	cmds = append(cmds, tableCmd)
 
+	// Sync our topRow with the table's actual viewport position so that
+	// colorizeTable() maps lines to the correct job indices.
+	m = m.syncTopRow()
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -188,10 +197,11 @@ func (m ListModel) View() string {
 		return ""
 	}
 	header := m.renderHeader()
+	tableView := m.colorizeTable(m.table.View())
 	if m.filterBar.Active() {
-		return header + "\n" + m.filterBar.View(m.width) + "\n" + m.table.View()
+		return header + "\n" + m.filterBar.View(m.width) + "\n" + tableView
 	}
-	return header + "\n" + m.table.View()
+	return header + "\n" + tableView
 }
 
 // Refresh triggers a background re-fetch and marks the model as loading.
@@ -221,9 +231,7 @@ func (m ListModel) SelectedJID() int {
 	if len(row) == 0 {
 		return 0
 	}
-	// Strip ANSI codes before parsing — cell content is coloured.
-	raw := stripANSI(row[0])
-	jid, _ := strconv.Atoi(raw)
+	jid, _ := strconv.Atoi(row[colJID])
 	return jid
 }
 
@@ -253,7 +261,6 @@ func (m ListModel) applyLocalFilters(src []models.Job) []models.Job {
 	return out
 }
 
-// sortJobs sorts m.jobs in-place according to sortCol/sortAsc.
 func (m *ListModel) sortJobs() {
 	col := m.sortCol
 	asc := m.sortAsc
@@ -287,31 +294,102 @@ func (m *ListModel) sortJobs() {
 	})
 }
 
+// buildRows produces plain-text table rows — NO ANSI codes in cells.
+// Row-level colours are applied later in colorizeTable() to avoid breaking
+// the table's width calculations when it truncates/pads cells.
 func (m ListModel) buildRows() []table.Row {
 	rows := make([]table.Row, 0, len(m.jobs))
 	for _, j := range m.jobs {
-		st := styles.StatusColor(j.Status)
-
 		doneCell := fmt.Sprintf("%d/%d", j.NumDone, j.NumTasks)
 		errCell := ""
 		if j.NumError > 0 {
-			// Error count always in red regardless of row status colour.
-			errCell = lipgloss.NewStyle().Inline(true).Foreground(lipgloss.Color("9")).
-				Render(fmt.Sprintf("%d", j.NumError))
+			errCell = strconv.Itoa(j.NumError)
 		}
-
 		rows = append(rows, table.Row{
-			st.Render(fmt.Sprintf("%d", j.JID)),
-			st.Render(j.Title),
-			st.Render(j.Owner),
-			st.Render(j.Status),
-			st.Render(doneCell),
+			fmt.Sprintf("%d", j.JID),
+			j.Title,
+			j.Owner,
+			j.Status,
+			doneCell,
 			errCell,
-			st.Render(fmt.Sprintf("%.0f", j.Priority)),
-			st.Render(formatTime(j.SpoolTime, m.cfg.UI.DateFormat)),
+			fmt.Sprintf("%.0f", j.Priority),
+			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 		})
 	}
 	return rows
+}
+
+// colorizeTable takes the rendered table string and prepends a per-row ANSI
+// foreground colour to each data line (skipping the header/separator and the
+// selected row, which keeps its purple bubbles highlight).
+func (m ListModel) colorizeTable(tableStr string) string {
+	lines := strings.Split(tableStr, "\n")
+	for i, line := range lines {
+		if i < 2 {
+			continue // header row + separator line
+		}
+		jobIdx := m.topRow + (i - 2)
+		if jobIdx < 0 || jobIdx >= len(m.jobs) {
+			continue
+		}
+		if jobIdx == m.table.Cursor() {
+			continue // selected row keeps the purple s.Selected highlight
+		}
+		ansi := statusANSI(m.jobs[jobIdx].Status)
+		if ansi != "" {
+			lines[i] = "\x1b[" + ansi + "m" + line + "\x1b[m"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// statusANSI maps a job status to an ANSI SGR parameter string (the part that
+// goes between \x1b[ and m).
+func statusANSI(status string) string {
+	switch status {
+	case "active":
+		return "38;5;10"  // bright green
+	case "error":
+		return "38;5;9"   // bright red
+	case "blocked":
+		return "38;5;11"  // bright yellow
+	case "paused":
+		return "38;5;14"  // bright cyan
+	case "done":
+		return "38;5;240" // medium grey
+	default:
+		return ""
+	}
+}
+
+// syncTopRow replicates bubbles/table's updateViewport logic so topRow stays
+// in sync with the table's actual scroll position after every cursor move.
+func (m ListModel) syncTopRow() ListModel {
+	cursor := m.table.Cursor()
+	height := m.viewportHeight()
+	if cursor < m.topRow {
+		m.topRow = cursor
+	}
+	if cursor >= m.topRow+height {
+		m.topRow = cursor - height + 1
+	}
+	if m.topRow < 0 {
+		m.topRow = 0
+	}
+	return m
+}
+
+// viewportHeight returns the number of visible data rows in the table.
+// Must match the value passed to table.SetHeight() in recalcTableHeight().
+func (m ListModel) viewportHeight() int {
+	h := m.height - 2
+	if m.filterBar.Active() {
+		h -= 3
+	}
+	if h < 1 {
+		h = 1
+	}
+	return h
 }
 
 func (m ListModel) renderHeader() string {
@@ -341,14 +419,7 @@ func (m ListModel) renderHeader() string {
 }
 
 func (m ListModel) recalcTableHeight() ListModel {
-	h := m.height - 2 // 1 header line + 1 for table's own border row
-	if m.filterBar.Active() {
-		h -= 3 // rounded-border filter bar is 3 lines tall
-	}
-	if h < 1 {
-		h = 1
-	}
-	m.table.SetHeight(h)
+	m.table.SetHeight(m.viewportHeight())
 	return m
 }
 
@@ -369,8 +440,7 @@ func newTable(width, height, sortCol int, sortAsc bool) table.Model {
 		Foreground(lipgloss.Color("229")).
 		Background(lipgloss.Color("57")).
 		Bold(false)
-	// Reset cell foreground so per-row ANSI colour codes in cell content are
-	// not overridden by an outer lipgloss style.
+	// Keep cell style to plain padding; row colours come from colorizeTable().
 	s.Cell = lipgloss.NewStyle().Padding(0, 1)
 	t.SetStyles(s)
 	return t
@@ -379,7 +449,7 @@ func newTable(width, height, sortCol int, sortAsc bool) table.Model {
 // makeColumns calculates column widths to fit the given terminal width.
 // Fixed columns total ~74 content chars + 16 padding (2 per col × 8 cols) = 90.
 // The TITLE column gets whatever remains, clamped to 10..65.
-// The sorted column header gets a ▲/▼ indicator appended.
+// The sorted column header gets a ▲/▼ indicator.
 func makeColumns(width, sortCol int, sortAsc bool) []table.Column {
 	titleWidth := 40
 	if width > 0 {
@@ -415,7 +485,6 @@ func makeColumns(width, sortCol int, sortAsc bool) []table.Column {
 }
 
 // formatTime parses Tractor's "2006-01-02 15:04:05" spooldate and reformats it.
-// Falls back to the raw string if parsing fails.
 func formatTime(s, format string) string {
 	if s == "" {
 		return ""
@@ -424,26 +493,4 @@ func formatTime(s, format string) string {
 		return t.Format(format)
 	}
 	return s
-}
-
-// stripANSI removes ANSI escape sequences from s.
-// Used when reading cell values that contain colour codes.
-func stripANSI(s string) string {
-	var b strings.Builder
-	inEsc := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '\x1b' {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
-				inEsc = false
-			}
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
 }
