@@ -17,10 +17,23 @@ func (c *Client) RawJobsResponse() ([]byte, error) {
 }
 
 // JobFilter contains optional filter parameters for QueryJobs.
+// All slice fields use OR semantics within the field; all fields AND together.
 type JobFilter struct {
-	Owner  string
-	Status string
-	Title  string
+	Owners   []string // owner must match one of these (case-insensitive)
+	Status   string   // exact status; "" = no filter
+	Title    string   // case-insensitive substring; "" = no filter
+	JIDs     []int    // job must have one of these JIDs
+	JIDFrom  int      // inclusive range start; 0 = unset
+	JIDTo    int      // inclusive range end; 0 = unset
+	Priority float64  // exact priority match; 0 = no filter
+	Projects []string // job.Projects must contain one of these (case-insensitive)
+}
+
+// IsEmpty reports whether no filter criteria are set.
+func (f JobFilter) IsEmpty() bool {
+	return len(f.Owners) == 0 && f.Status == "" && f.Title == "" &&
+		len(f.JIDs) == 0 && f.JIDFrom == 0 && f.JIDTo == 0 &&
+		f.Priority == 0 && len(f.Projects) == 0
 }
 
 // rawJobData mirrors the actual JSON shape inside each job's "data" object.
@@ -129,7 +142,7 @@ func deriveStatus(paused, numActive, numDone, numTotal, numError int) string {
 // results are not capped by the engine's default q=jobs limit (~2 500).
 // Falls back to q=jobs if q=select returns an error or unexpected payload.
 func (c *Client) QueryJobs(filter JobFilter) ([]models.Job, error) {
-	if filter.Owner != "" || filter.Status != "" || filter.Title != "" {
+	if !filter.IsEmpty() {
 		jobs, err := c.queryJobsSelect(filter)
 		if err == nil {
 			return jobs, nil
@@ -143,8 +156,10 @@ func (c *Client) QueryJobs(filter JobFilter) ([]models.Job, error) {
 func (c *Client) queryJobsList(filter JobFilter) ([]models.Job, error) {
 	params := c.authenticatedParams()
 	params.Set("q", "jobs")
-	if filter.Owner != "" {
-		params.Set("owner", filter.Owner)
+	// Pass a single owner to the engine when we can; multiple owners or other
+	// filter types are handled client-side after fetching the full list.
+	if len(filter.Owners) == 1 {
+		params.Set("owner", filter.Owners[0])
 	}
 
 	b, err := c.get("/Tractor/monitor", params)
@@ -168,7 +183,6 @@ func (c *Client) queryJobsList(filter JobFilter) ([]models.Job, error) {
 		}
 	}
 
-	// Client-side filter for status and title (q=jobs doesn't support them server-side).
 	return applyClientFilters(jobs, filter), nil
 }
 
@@ -208,40 +222,158 @@ func (c *Client) queryJobsSelect(filter JobFilter) ([]models.Job, error) {
 	for _, r := range resp.Rows {
 		jobs = append(jobs, r.toJob())
 	}
-	return jobs, nil
+	// Projects filter is client-side only (array contains not easily expressed
+	// in Tractor's WHERE language).
+	return applyClientFilters(jobs, filter), nil
 }
 
 // buildSelectWhere converts a JobFilter into a Tractor tractorselect WHERE clause.
-// Tractor WHERE syntax: field='value', aliases like "active", "error", title like '%foo%'.
+// Projects is excluded — it is always handled client-side.
 func buildSelectWhere(f JobFilter) string {
 	var parts []string
-	if f.Owner != "" {
-		// escape single quotes in username to prevent query breakage
-		safe := strings.ReplaceAll(f.Owner, "'", "''")
+
+	// Owner(s) — OR'd together.
+	if len(f.Owners) == 1 {
+		safe := sqEsc(f.Owners[0])
 		parts = append(parts, fmt.Sprintf("owner='%s'", safe))
-	}
-	if f.Status != "" {
-		switch f.Status {
-		case "active":
-			parts = append(parts, "active")
-		case "error":
-			parts = append(parts, "error")
-		case "done":
-			parts = append(parts, "done")
-		case "blocked":
-			parts = append(parts, "blocked")
-		case "paused":
-			parts = append(parts, "pausetime is not null")
+	} else if len(f.Owners) > 1 {
+		orParts := make([]string, len(f.Owners))
+		for i, o := range f.Owners {
+			orParts[i] = fmt.Sprintf("owner='%s'", sqEsc(o))
 		}
+		parts = append(parts, "("+strings.Join(orParts, " or ")+")")
 	}
+
+	// JID(s) and/or range — OR'd together.
+	var jidParts []string
+	for _, jid := range f.JIDs {
+		jidParts = append(jidParts, fmt.Sprintf("jid=%d", jid))
+	}
+	if f.JIDFrom > 0 && f.JIDTo > 0 {
+		jidParts = append(jidParts, fmt.Sprintf("(jid>=%d and jid<=%d)", f.JIDFrom, f.JIDTo))
+	}
+	switch len(jidParts) {
+	case 1:
+		parts = append(parts, jidParts[0])
+	case 0:
+		// nothing
+	default:
+		parts = append(parts, "("+strings.Join(jidParts, " or ")+")")
+	}
+
+	// Status (Tractor WHERE aliases).
+	switch f.Status {
+	case "active":
+		parts = append(parts, "active")
+	case "error":
+		parts = append(parts, "error")
+	case "done":
+		parts = append(parts, "done")
+	case "blocked":
+		parts = append(parts, "blocked")
+	case "paused":
+		parts = append(parts, "pausetime is not null")
+	}
+
+	// Priority — exact match.
+	if f.Priority != 0 {
+		parts = append(parts, fmt.Sprintf("priority=%g", f.Priority))
+	}
+
+	// Title — substring via LIKE.
 	if f.Title != "" {
 		safe := strings.ReplaceAll(f.Title, "'", "''")
 		safe = strings.ReplaceAll(safe, "%", "\\%")
 		safe = strings.ReplaceAll(safe, "_", "\\_")
 		parts = append(parts, fmt.Sprintf("title like '%%%s%%'", safe))
 	}
+
 	return strings.Join(parts, " and ")
 }
+
+// applyClientFilters filters a job slice by all fields in f.
+// Used for both the q=jobs fallback and projects filtering after q=select.
+func applyClientFilters(jobs []models.Job, f JobFilter) []models.Job {
+	if f.IsEmpty() {
+		return jobs
+	}
+	out := jobs[:0]
+	for _, j := range jobs {
+		if matchesFilter(j, f) {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+func matchesFilter(j models.Job, f JobFilter) bool {
+	// JID: specific list OR range (both conditions are OR'd).
+	if len(f.JIDs) > 0 || f.JIDFrom > 0 || f.JIDTo > 0 {
+		matched := false
+		for _, id := range f.JIDs {
+			if j.JID == id {
+				matched = true
+				break
+			}
+		}
+		if !matched && f.JIDFrom > 0 && f.JIDTo > 0 {
+			matched = j.JID >= f.JIDFrom && j.JID <= f.JIDTo
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// Owner: any of the listed values (case-insensitive).
+	if len(f.Owners) > 0 {
+		matched := false
+		lo := strings.ToLower(j.Owner)
+		for _, o := range f.Owners {
+			if lo == strings.ToLower(o) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// Status: exact match.
+	if f.Status != "" && j.Status != f.Status {
+		return false
+	}
+
+	// Priority: exact match.
+	if f.Priority != 0 && j.Priority != f.Priority {
+		return false
+	}
+
+	// Title: case-insensitive substring.
+	if f.Title != "" && !strings.Contains(strings.ToLower(j.Title), strings.ToLower(f.Title)) {
+		return false
+	}
+
+	// Projects: job.Projects must contain at least one of the filter terms.
+	if len(f.Projects) > 0 {
+		matched := false
+		lo := strings.ToLower(j.Projects)
+		for _, p := range f.Projects {
+			if strings.Contains(lo, strings.ToLower(p)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	return true
+}
+
+// sqEsc escapes single quotes for use in SQL string literals.
+func sqEsc(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
 // formatProjects converts the Tractor projects StrArrayField (JSON array or
 // null) to a display string.  Multiple projects are joined with commas.
@@ -284,22 +416,4 @@ func formatMetadata(s string) string {
 		parts = append(parts, fmt.Sprintf("%v", m[k]))
 	}
 	return strings.Join(parts, "/")
-}
-
-// applyClientFilters does local filtering for status and title on a job slice.
-func applyClientFilters(jobs []models.Job, filter JobFilter) []models.Job {
-	if filter.Status == "" && filter.Title == "" {
-		return jobs
-	}
-	out := jobs[:0]
-	for _, j := range jobs {
-		if filter.Status != "" && j.Status != filter.Status {
-			continue
-		}
-		if filter.Title != "" && !strings.Contains(strings.ToLower(j.Title), strings.ToLower(filter.Title)) {
-			continue
-		}
-		out = append(out, j)
-	}
-	return out
 }

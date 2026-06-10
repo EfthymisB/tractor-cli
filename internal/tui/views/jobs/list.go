@@ -150,9 +150,9 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		case "m":
 			m.myJobs = !m.myJobs
 			if m.myJobs {
-				m.apiFilter.Owner = m.cfg.Auth.Username
+				m.apiFilter.Owners = []string{m.cfg.Auth.Username}
 			} else {
-				m.apiFilter.Owner = ""
+				m.apiFilter.Owners = nil
 			}
 			m.loading = true
 			cmds = append(cmds, m.doFetch())
@@ -417,14 +417,36 @@ func (m ListModel) renderHeader() string {
 	}
 
 	var tags []string
-	if m.myJobs {
-		tags = append(tags, "owner:"+m.cfg.Auth.Username)
+	// JID filter tags.
+	if len(m.apiFilter.JIDs) > 0 {
+		jidStrs := make([]string, len(m.apiFilter.JIDs))
+		for i, id := range m.apiFilter.JIDs {
+			jidStrs[i] = strconv.Itoa(id)
+		}
+		tags = append(tags, "jid:"+strings.Join(jidStrs, ","))
 	}
-	if m.errOnly {
-		tags = append(tags, "status:error")
+	if m.apiFilter.JIDFrom > 0 && m.apiFilter.JIDTo > 0 {
+		tags = append(tags, fmt.Sprintf("jid:%d-%d", m.apiFilter.JIDFrom, m.apiFilter.JIDTo))
+	}
+	// Owner filter (covers both the 'm' toggle and filter-bar owner:).
+	if len(m.apiFilter.Owners) > 0 {
+		tags = append(tags, "owner:"+strings.Join(m.apiFilter.Owners, ","))
+	}
+	if m.apiFilter.Status != "" {
+		tags = append(tags, "status:"+m.apiFilter.Status)
+	}
+	if m.apiFilter.Priority != 0 {
+		tags = append(tags, fmt.Sprintf("prio:%.0f", m.apiFilter.Priority))
 	}
 	if m.apiFilter.Title != "" {
 		tags = append(tags, "title:"+m.apiFilter.Title)
+	}
+	if len(m.apiFilter.Projects) > 0 {
+		tags = append(tags, "projects:"+strings.Join(m.apiFilter.Projects, ","))
+	}
+	// errOnly is a local-only display filter.
+	if m.errOnly {
+		tags = append(tags, "errors-only")
 	}
 	if len(tags) > 0 {
 		title += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).

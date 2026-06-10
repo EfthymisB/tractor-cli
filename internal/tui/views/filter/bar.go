@@ -2,6 +2,7 @@
 package filter
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -26,7 +27,7 @@ type Model struct {
 // New returns an initialised filter bar (inactive by default).
 func New() Model {
 	ti := textinput.New()
-	ti.Placeholder = "owner:name  status:error  title:comp"
+	ti.Placeholder = "owner:a,b  jid:123,100-200  prio:1000  projects:cc  status:error  title:t"
 	ti.CharLimit = 256
 	return Model{input: ti}
 }
@@ -77,7 +78,19 @@ func (m Model) View(width int) string {
 	return styles.FilterBorder.Width(width - 4).Render("Filter: " + m.input.View())
 }
 
-// parseFilter turns "owner:x status:y title:z" into a JobFilter.
+// parseFilter parses a filter expression string into a JobFilter.
+//
+// Syntax:
+//
+//	owner:alice,bob         — match jobs owned by alice OR bob
+//	jid:2207510             — exact JID match
+//	jid:2207510,2207511     — multiple JIDs (OR)
+//	jid:2207510-2207520     — inclusive JID range
+//	jid:100,200-300         — mixed specific JIDs and a range
+//	status:error            — exact status
+//	title:comp              — case-insensitive substring on title
+//	prio:1000               — exact priority match
+//	projects:cc,thornfield  — job must contain cc OR thornfield
 func parseFilter(s string) api.JobFilter {
 	f := api.JobFilter{}
 	for _, part := range strings.Fields(s) {
@@ -85,14 +98,68 @@ func parseFilter(s string) api.JobFilter {
 		if len(kv) != 2 {
 			continue
 		}
-		switch strings.ToLower(kv[0]) {
+		key := strings.ToLower(kv[0])
+		val := kv[1]
+		switch key {
 		case "owner":
-			f.Owner = kv[1]
+			f.Owners = splitCSV(val)
+		case "jid":
+			parseJIDFilter(val, &f)
 		case "status":
-			f.Status = kv[1]
+			f.Status = val
 		case "title":
-			f.Title = kv[1]
+			f.Title = val
+		case "prio", "priority":
+			if p, err := strconv.ParseFloat(val, 64); err == nil {
+				f.Priority = p
+			}
+		case "projects", "project":
+			f.Projects = splitCSV(val)
 		}
 	}
 	return f
+}
+
+// splitCSV splits a comma-separated string, trimming whitespace and dropping
+// empty elements.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseJIDFilter parses the value side of a jid: token.  Each comma-separated
+// item may be a single integer ("2207510") or an inclusive integer range
+// ("2207510-2207520").  Mixed forms are supported: "100,200-300,400".
+// Only one range is tracked; a second range overwrites the first.
+func parseJIDFilter(val string, f *api.JobFilter) {
+	for _, item := range strings.Split(val, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		// Try range: "N-M" where the dash is not the very first character
+		// (avoids treating negative numbers as ranges).
+		if dashIdx := strings.Index(item, "-"); dashIdx > 0 {
+			fromStr := item[:dashIdx]
+			toStr := item[dashIdx+1:]
+			from, err1 := strconv.Atoi(fromStr)
+			to, err2 := strconv.Atoi(toStr)
+			if err1 == nil && err2 == nil && from > 0 && to >= from {
+				f.JIDFrom = from
+				f.JIDTo = to
+				continue
+			}
+		}
+		// Fall back to a single JID.
+		if jid, err := strconv.Atoi(item); err == nil && jid > 0 {
+			f.JIDs = append(f.JIDs, jid)
+		}
+	}
 }
