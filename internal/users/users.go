@@ -1,25 +1,162 @@
-// Package users discovers login usernames from the local system directory
-// (LDAP/NSS via getent, or /etc/passwd as a fallback) for owner autocomplete.
+// Package users discovers login usernames for owner-filter autocomplete. It
+// prefers an Active Directory query over GSSAPI (ldapsearch) and falls back to
+// getent passwd / /etc/passwd when LDAP is unavailable.
 package users
 
 import (
 	"bufio"
+	"context"
+	"encoding/base64"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// minUID excludes system/daemon accounts; real LDAP/login users are >= 1000
-// on typical Linux farm nodes.
+// minUID excludes system/daemon accounts in the getent fallback; real login
+// users are >= 1000 on typical Linux farm nodes.
 const minUID = 1000
 
-// List returns sorted, de-duplicated login usernames discovered via
-// `getent passwd`. On platforms without getent (e.g. Windows dev machines) or
-// on any error it returns an empty slice — callers degrade gracefully to no
-// autocomplete.
-func List() []string {
-	out, err := exec.Command("getent", "passwd").Output()
+// ldapFilter selects enabled person accounts (excludes disabled accounts via
+// the userAccountControl bit-and rule).
+const ldapFilter = "(&(objectClass=user)(objectCategory=person)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+
+const cmdTimeout = 15 * time.Second
+
+// excluded lists account names to drop from autocomplete regardless of source.
+var excluded = map[string]struct{}{
+	"Administrator": {},
+}
+
+// Config controls how usernames are discovered from the directory.
+type Config struct {
+	URI       string // ldapsearch -H value, e.g. "ldap://dc02.example.com"
+	BaseDN    string // search base, e.g. "dc=example,dc=com"
+	Realm     string // Kerberos realm for the kinit principal, e.g. "EXAMPLE.COM"
+	Username  string // login name; used as the kinit principal
+	Password  string // used only when AutoKinit is enabled
+	AutoKinit bool   // attempt kinit with Password when no ticket exists
+}
+
+// List returns sorted, de-duplicated login usernames. It prefers an LDAP
+// (Active Directory) query over GSSAPI; if that yields nothing it falls back to
+// getent passwd. Any failure degrades gracefully to an empty slice, leaving the
+// caller to rely on other autocomplete sources (e.g. job owners).
+func List(cfg Config) []string {
+	if names := fromLDAP(cfg); len(names) > 0 {
+		return names
+	}
+	return fromGetent()
+}
+
+// fromLDAP runs ldapsearch over GSSAPI and parses the sAMAccountName values.
+func fromLDAP(cfg Config) []string {
+	if cfg.URI == "" || cfg.BaseDN == "" {
+		return nil
+	}
+	if !ensureTicket(cfg) {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ldapsearch",
+		"-H", cfg.URI,
+		"-Y", "GSSAPI",
+		"-b", cfg.BaseDN,
+		ldapFilter,
+		"sAMAccountName",
+	)
+	// Output() still returns whatever reached stdout even when ldapsearch exits
+	// non-zero, so parse it regardless of the error. SASL status lines go to
+	// stderr and never appear here.
+	out, _ := cmd.Output()
+	return parseLDAP(string(out))
+}
+
+// ensureTicket reports whether a usable Kerberos ticket is available. When
+// AutoKinit is enabled and no ticket exists it attempts a single kinit using
+// the supplied password. It never blocks on an interactive password prompt.
+//
+// AutoKinit is opt-in because running kinit with a wrong password can trip an
+// Active Directory account-lockout policy; on a Kerberos-backed farm a ticket
+// is normally already present (via SSSD/login) and this just returns true.
+func ensureTicket(cfg Config) bool {
+	if hasTicket() {
+		return true
+	}
+	if !cfg.AutoKinit || cfg.Username == "" || cfg.Realm == "" || cfg.Password == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "kinit", cfg.Username+"@"+cfg.Realm)
+	cmd.Stdin = strings.NewReader(cfg.Password + "\n")
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return hasTicket()
+}
+
+// hasTicket reports whether the credential cache holds a valid ticket.
+func hasTicket() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "klist", "-s").Run() == nil
+}
+
+// parseLDAP extracts sAMAccountName values from ldapsearch LDIF output. Other
+// LDIF attributes and SASL status lines are ignored, and base64-encoded values
+// ("sAMAccountName::") are decoded.
+func parseLDAP(text string) []string {
+	seen := make(map[string]struct{})
+	var names []string
+
+	sc := bufio.NewScanner(strings.NewReader(text))
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+
+		var val string
+		switch {
+		case strings.HasPrefix(line, "sAMAccountName::"):
+			enc := strings.TrimSpace(line[len("sAMAccountName::"):])
+			dec, err := base64.StdEncoding.DecodeString(enc)
+			if err != nil {
+				continue
+			}
+			val = string(dec)
+		case strings.HasPrefix(line, "sAMAccountName:"):
+			val = strings.TrimSpace(line[len("sAMAccountName:"):])
+		default:
+			continue
+		}
+
+		val = strings.TrimSpace(val)
+		if val == "" {
+			continue
+		}
+		if _, skip := excluded[val]; skip {
+			continue
+		}
+		if _, dup := seen[val]; dup {
+			continue
+		}
+		seen[val] = struct{}{}
+		names = append(names, val)
+	}
+
+	sort.Strings(names)
+	return names
+}
+
+// fromGetent lists usernames via getent passwd (LDAP/NSS or /etc/passwd),
+// keeping only UID >= minUID. Used as a fallback when LDAP is unavailable.
+func fromGetent() []string {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "getent", "passwd").Output()
 	if err != nil {
 		return nil
 	}

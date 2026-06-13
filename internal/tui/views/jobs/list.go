@@ -102,14 +102,23 @@ func New(client *api.Client, cfg *config.Config) ListModel {
 
 // Init kicks off the initial jobs fetch and loads usernames for autocomplete.
 func (m ListModel) Init() tea.Cmd {
-	return tea.Batch(m.doFetch(), m.spinner.Tick, loadUsernames())
+	return tea.Batch(m.doFetch(), m.spinner.Tick, m.loadUsernames())
 }
 
-// loadUsernames fetches the system/LDAP username list (getent passwd) in the
-// background for the owner-filter autocomplete.
-func loadUsernames() tea.Cmd {
+// loadUsernames fetches the directory username list (Active Directory over
+// GSSAPI, falling back to getent passwd) in the background for owner-filter
+// autocomplete.
+func (m ListModel) loadUsernames() tea.Cmd {
+	cfg := users.Config{
+		URI:       m.cfg.LDAP.URI,
+		BaseDN:    m.cfg.LDAP.BaseDN,
+		Realm:     m.cfg.LDAP.Realm,
+		Username:  m.cfg.Auth.Username,
+		Password:  config.Password(),
+		AutoKinit: m.cfg.LDAP.AutoKinit,
+	}
 	return func() tea.Msg {
-		return usernamesLoadedMsg{names: users.List()}
+		return usernamesLoadedMsg{names: users.List(cfg)}
 	}
 }
 

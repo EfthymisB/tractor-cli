@@ -15,6 +15,19 @@ type Config struct {
 	Auth    AuthConfig    `mapstructure:"auth"`
 	UI      UIConfig      `mapstructure:"ui"`
 	Filters FiltersConfig `mapstructure:"filters"`
+	LDAP    LDAPConfig    `mapstructure:"ldap"`
+}
+
+// LDAPConfig holds settings for the Active Directory query that populates
+// owner-filter autocomplete. Defaults are filled in by Load.
+type LDAPConfig struct {
+	URI    string `mapstructure:"uri"`     // ldapsearch -H value
+	BaseDN string `mapstructure:"base_dn"` // search base
+	Realm  string `mapstructure:"realm"`   // Kerberos realm for the kinit principal
+	// AutoKinit makes the app attempt `kinit` with TRACTOR_PASSWORD when no
+	// Kerberos ticket exists. Off by default: a wrong password can trip an AD
+	// account-lockout policy, and a ticket is usually already present via SSSD.
+	AutoKinit bool `mapstructure:"auto_kinit"`
 }
 
 // EngineConfig holds Tractor engine connection settings.
@@ -55,6 +68,10 @@ func Load() (*Config, error) {
 	v.SetDefault("ui.default_view", "jobs")
 	v.SetDefault("ui.date_format", "15:04 02/01")
 	v.SetDefault("ui.max_log_lines", 500)
+	v.SetDefault("ldap.uri", "ldap://dc02.weacceptyou.com")
+	v.SetDefault("ldap.base_dn", "dc=weacceptyou,dc=com")
+	v.SetDefault("ldap.realm", "WEACCEPTYOU.COM")
+	v.SetDefault("ldap.auto_kinit", false)
 
 	// Config file location
 	cfgDir, err := os.UserConfigDir()
@@ -77,6 +94,10 @@ func Load() (*Config, error) {
 	v.BindEnv("engine.host", "TRACTOR_HOST")
 	v.BindEnv("engine.port", "TRACTOR_PORT")
 	v.BindEnv("auth.username", "TRACTOR_USER")
+	v.BindEnv("ldap.uri", "TRACTOR_LDAP_URI")
+	v.BindEnv("ldap.base_dn", "TRACTOR_LDAP_BASE_DN")
+	v.BindEnv("ldap.realm", "TRACTOR_LDAP_REALM")
+	v.BindEnv("ldap.auto_kinit", "TRACTOR_LDAP_AUTO_KINIT")
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
