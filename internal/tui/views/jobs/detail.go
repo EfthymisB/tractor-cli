@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
@@ -29,17 +30,17 @@ const (
 	dcolTitle    = 1
 	dcolState    = 2
 	dcolProgress = 3
-	dcolRetry    = 4
+	dcolBlade    = 4
 	dcolService  = 5
 	dcolActive   = 6
 	dNumCols     = 7
 )
 
 var detailColumnNames = [dNumCols]string{
-	"TID", "TITLE", "STATE", "PROG", "RETRY", "SERVICE", "ACTIVE",
+	"TID", "TITLE", "STATE", "PROG", "BLADE", "SERVICE", "ACTIVE",
 }
 
-var detailColumnCaps = [dNumCols]int{0, 0, 0, 0, 0, 24, 0}
+var detailColumnCaps = [dNumCols]int{0, 0, 0, 0, 20, 24, 0}
 
 // DetailModel is the per-job task list view (Phase 3).
 type DetailModel struct {
@@ -204,9 +205,9 @@ func (m DetailModel) buildRows() []table.Row {
 			t.Title,
 			t.State,
 			progressPercent(t.Progress),
-			countCell(t.RetryCount),
+			t.Blade,
 			t.Service,
-			formatTime(t.ActiveTime, m.cfg.UI.DateFormat),
+			formatEpoch(t.ActiveTime, m.cfg.UI.DateFormat),
 		})
 	}
 	return rows
@@ -244,9 +245,9 @@ func (m DetailModel) makeColumns() []table.Column {
 			"", // TITLE fills remaining width
 			t.State,
 			progressPercent(t.Progress),
-			countCell(t.RetryCount),
+			t.Blade,
 			t.Service,
-			formatTime(t.ActiveTime, m.cfg.UI.DateFormat),
+			formatEpoch(t.ActiveTime, m.cfg.UI.DateFormat),
 		}
 		for col, cell := range cells {
 			if col == dcolTitle {
@@ -318,4 +319,13 @@ func progressPercent(p float64) string {
 		p *= 100
 	}
 	return fmt.Sprintf("%.0f%%", p)
+}
+
+// formatEpoch renders a Unix timestamp (seconds) using the UI date format,
+// blank when there is no timestamp.
+func formatEpoch(sec float64, format string) string {
+	if sec <= 0 {
+		return ""
+	}
+	return time.Unix(int64(sec), 0).Format(format)
 }

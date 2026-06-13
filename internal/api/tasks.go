@@ -3,48 +3,52 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/tractor-cli/tractor-cli/internal/models"
 )
 
-// taskRow mirrors a row returned by q=select&table=task.
-type taskRow struct {
-	TID        int         `json:"tid"`
-	JID        int         `json:"jid"`
-	Title      string      `json:"title"`
-	State      string      `json:"state"`
-	Service    string      `json:"service"`
-	Progress   float64     `json:"progress"`
-	ActiveTime interface{} `json:"activetime"` // timestamp or null
-	ReadyTime  interface{} `json:"readytime"`  // timestamp or null
-	RetryCount int         `json:"retrycount"`
-	HasLog     bool        `json:"haslog"`
+// jtree response shapes. q=jtree returns:
+//
+//	{"users": {"<user>": {"J<jid>": {"data": {...job...}, "children": [task...]}}}}
+//
+// where each task node is {"data": {...}, "children": [task...]} and the task
+// tree is only present when the graph flag is requested.
+type jtreeNode struct {
+	Data     jtreeTaskData `json:"data"`
+	Children []jtreeNode   `json:"children"`
 }
 
-func (r taskRow) toTask() models.Task {
-	return models.Task{
-		TID:        r.TID,
-		JID:        r.JID,
-		Title:      r.Title,
-		State:      r.State,
-		Service:    r.Service,
-		Progress:   r.Progress,
-		ActiveTime: timestampString(r.ActiveTime),
-		ReadyTime:  timestampString(r.ReadyTime),
-		RetryCount: r.RetryCount,
-		HasLog:     r.HasLog,
-	}
+type jtreeJob struct {
+	Children []jtreeNode `json:"children"`
 }
 
-// QueryTasks returns all tasks for a given job ID, ordered by task id.
-// Uses q=select&table=task (the same table-level query used for jobs).
+// jtreeTaskData mirrors the per-task "data" object produced by tasktreeForRows.
+// "state" is encoded as <log><state>[,<progress>], e.g. "-A,50" or "+D".
+type jtreeTaskData struct {
+	TID        int     `json:"tid"`
+	Title      string  `json:"title"`
+	State      string  `json:"state"`
+	Service    string  `json:"service"`
+	Blade      string  `json:"blade"`
+	StateTime  float64 `json:"statetime"`
+	ActiveTime float64 `json:"activetime"`
+}
+
+// QueryTasks returns all tasks for a given job ID, flattened from the job's
+// task tree (q=jtree) and ordered by task id.
 func (c *Client) QueryTasks(jid int) ([]models.Task, error) {
 	params := c.authenticatedParams()
-	params.Set("q", "select")
-	params.Set("table", "task")
-	params.Set("where", fmt.Sprintf("jid=%d", jid))
-	params.Set("orderby", "tid")
-	params.Set("limit", "100000")
+	params.Set("q", "jtree")
+	params.Set("jid", strconv.Itoa(jid))
+	// Request the task graph. Different engine builds have used different
+	// parameter names for this flag; send both to be safe (unknown query
+	// params are ignored by the engine).
+	params.Set("graph", "1")
+	params.Set("getgraph", "1")
+	params.Set("notes", "0")
 
 	b, err := c.get("/Tractor/monitor", params)
 	if err != nil {
@@ -52,34 +56,81 @@ func (c *Client) QueryTasks(jid int) ([]models.Task, error) {
 	}
 
 	var resp struct {
-		RC   int       `json:"rc"`
-		Rows []taskRow `json:"rows"`
+		RC    int                            `json:"rc"`
+		Msg   string                         `json:"msg"`
+		Users map[string]map[string]jtreeJob `json:"users"`
 	}
 	if err := json.Unmarshal(b, &resp); err != nil {
 		return nil, fmt.Errorf("QueryTasks: parsing response: %w", err)
 	}
 	if resp.RC != 0 {
-		return nil, fmt.Errorf("QueryTasks: engine returned rc=%d", resp.RC)
+		return nil, fmt.Errorf("QueryTasks: engine error (rc=%d): %s", resp.RC, resp.Msg)
 	}
 
-	tasks := make([]models.Task, 0, len(resp.Rows))
-	for _, r := range resp.Rows {
-		tasks = append(tasks, r.toTask())
+	var tasks []models.Task
+	for _, jobs := range resp.Users {
+		for _, job := range jobs {
+			flattenTasks(jid, job.Children, &tasks)
+		}
 	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].TID < tasks[j].TID })
 	return tasks, nil
 }
 
-// timestampString normalises a Postgres timestamp value (which may be null) to
-// the "2006-01-02 15:04:05" form the UI's formatTime understands.
-func timestampString(v interface{}) string {
-	s, ok := v.(string)
-	if !ok || s == "" {
-		return ""
+// flattenTasks walks the task tree depth-first, appending each node as a Task.
+func flattenTasks(jid int, nodes []jtreeNode, out *[]models.Task) {
+	for _, n := range nodes {
+		state, hasLog, progress := decodeTaskState(n.Data.State)
+		*out = append(*out, models.Task{
+			TID:        n.Data.TID,
+			JID:        jid,
+			Title:      n.Data.Title,
+			State:      state,
+			Service:    n.Data.Service,
+			Progress:   progress,
+			HasLog:     hasLog,
+			Blade:      n.Data.Blade,
+			StateTime:  n.Data.StateTime,
+			ActiveTime: n.Data.ActiveTime,
+		})
+		flattenTasks(jid, n.Children, out)
 	}
-	if len(s) >= 19 {
-		return s[:19]
+}
+
+// decodeTaskState parses the jtree state encoding "<log><state>[,<progress>]".
+// log: '+' has a log, '-' none. state: A=active, B=blocked/ready, D=done,
+// E=error. An optional ",<n>" suffix is the progress percentage.
+func decodeTaskState(s string) (state string, hasLog bool, progress float64) {
+	state = "blocked"
+	if s == "" {
+		return
 	}
-	return s
+	i := 0
+	switch s[0] {
+	case '+':
+		hasLog = true
+		i = 1
+	case '-':
+		i = 1
+	}
+	if i < len(s) {
+		switch s[i] {
+		case 'A':
+			state = "active"
+		case 'B':
+			state = "blocked"
+		case 'D':
+			state = "done"
+		case 'E':
+			state = "error"
+		}
+	}
+	if idx := strings.IndexByte(s, ','); idx >= 0 && idx+1 < len(s) {
+		if p, err := strconv.ParseFloat(s[idx+1:], 64); err == nil {
+			progress = p
+		}
+	}
+	return
 }
 
 // TaskDetails returns the commands associated with a specific task.
