@@ -14,6 +14,7 @@ type Job struct {
 	NumError  int     `json:"numerror"`
 	NumTasks  int     `json:"numtasks"`
 	NumDone   int     `json:"numdone"`
+	NumActive int     `json:"numactive"`
 	Projects  string  `json:"projects"`  // joined from []string
 	SpoolHost string  `json:"spoolhost"`
 	Metadata  string  `json:"metadata"`  // formatted for display

@@ -74,6 +74,7 @@ func (r rawJobData) toJob() models.Job {
 		NumTasks:  numTotal,
 		NumDone:   numDone,
 		NumError:  numError,
+		NumActive: numActive,
 	}
 }
 
@@ -118,6 +119,7 @@ func (r selectJobRow) toJob() models.Job {
 		NumTasks:  r.NumTasks,
 		NumDone:   r.NumDone,
 		NumError:  r.NumError,
+		NumActive: r.NumActive,
 	}
 }
 

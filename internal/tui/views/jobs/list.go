@@ -32,14 +32,16 @@ const (
 	colTitle     = 1
 	colOwner     = 2
 	colStatus    = 3
-	colDone      = 4
+	colAct       = 4
 	colErr       = 5
-	colPri       = 6
-	colSpooled   = 7
-	colProjects  = 8
-	colSpoolHost = 9
-	colMetadata  = 10
-	numCols      = 11
+	colDone      = 6
+	colTotal     = 7
+	colPri       = 8
+	colSpooled   = 9
+	colProjects  = 10
+	colSpoolHost = 11
+	colMetadata  = 12
+	numCols      = 13
 )
 
 // ListModel is the jobs list view model.
@@ -300,10 +302,14 @@ func (m *ListModel) sortJobs() {
 			less = strings.ToLower(a.Owner) < strings.ToLower(b.Owner)
 		case colStatus:
 			less = a.Status < b.Status
-		case colDone:
-			less = a.NumDone < b.NumDone
+		case colAct:
+			less = a.NumActive < b.NumActive
 		case colErr:
 			less = a.NumError < b.NumError
+		case colDone:
+			less = a.NumDone < b.NumDone
+		case colTotal:
+			less = a.NumTasks < b.NumTasks
 		case colPri:
 			less = a.Priority < b.Priority
 		case colSpooled:
@@ -330,18 +336,15 @@ func (m *ListModel) sortJobs() {
 func (m ListModel) buildRows() []table.Row {
 	rows := make([]table.Row, 0, len(m.jobs))
 	for _, j := range m.jobs {
-		doneCell := fmt.Sprintf("%d/%d", j.NumDone, j.NumTasks)
-		errCell := ""
-		if j.NumError > 0 {
-			errCell = strconv.Itoa(j.NumError)
-		}
 		rows = append(rows, table.Row{
 			fmt.Sprintf("%d", j.JID),
 			j.Title,
 			j.Owner,
 			j.Status,
-			doneCell,
-			errCell,
+			countCell(j.NumActive),
+			countCell(j.NumError),
+			strconv.Itoa(j.NumDone),
+			strconv.Itoa(j.NumTasks),
 			fmt.Sprintf("%.0f", j.Priority),
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
@@ -507,11 +510,11 @@ func newTable() table.Model {
 func (m ListModel) makeColumns() []table.Column {
 	// header names in column order
 	names := [numCols]string{
-		"JID", "TITLE", "OWNER", "STATUS", "DONE",
-		"ERR", "PRI", "SPOOLED", "PROJECTS", "SPOOLHOST", "METADATA",
+		"JID", "TITLE", "OWNER", "STATUS", "ACT", "ERR", "DONE", "TOTAL",
+		"PRI", "SPOOLED", "PROJECTS", "SPOOLHOST", "METADATA",
 	}
 	// hard caps on content width (0 = no cap)
-	caps := [numCols]int{0, 0, 20, 0, 0, 0, 0, 0, 25, 25, 35}
+	caps := [numCols]int{0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 25, 25, 35}
 
 	// Start with the header width as the minimum content width.
 	widths := [numCols]int{}
@@ -525,17 +528,15 @@ func (m ListModel) makeColumns() []table.Column {
 
 	// Grow each column to fit its actual data (TITLE excluded — it fills the gap).
 	for _, j := range m.jobs {
-		errStr := ""
-		if j.NumError > 0 {
-			errStr = strconv.Itoa(j.NumError)
-		}
 		cells := [numCols]string{
 			strconv.Itoa(j.JID),
 			"", // TITLE: excluded from auto-resize
 			j.Owner,
 			j.Status,
-			fmt.Sprintf("%d/%d", j.NumDone, j.NumTasks),
-			errStr,
+			countCell(j.NumActive),
+			countCell(j.NumError),
+			strconv.Itoa(j.NumDone),
+			strconv.Itoa(j.NumTasks),
 			fmt.Sprintf("%.0f", j.Priority),
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
@@ -591,6 +592,15 @@ func (m ListModel) makeColumns() []table.Column {
 		cols[col] = table.Column{Title: colTitle_(col), Width: widths[col] + 2}
 	}
 	return cols
+}
+
+// countCell renders a task-count cell, leaving it blank for zero so the ACT
+// and ERR columns stay visually quiet for jobs with none.
+func countCell(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 // formatTime parses Tractor's "2006-01-02 15:04:05" spooldate and reformats it.
