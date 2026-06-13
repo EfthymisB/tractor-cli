@@ -29,19 +29,23 @@ type usernamesLoadedMsg struct{ names []string }
 // column indices — must match the order returned by makeColumns.
 const (
 	colJID       = 0
-	colTitle     = 1
-	colOwner     = 2
-	colStatus    = 3
-	colAct       = 4
-	colErr       = 5
-	colDone      = 6
-	colTotal     = 7
-	colPri       = 8
-	colSpooled   = 9
-	colProjects  = 10
-	colSpoolHost = 11
-	colMetadata  = 12
-	numCols      = 13
+	colProgress  = 1
+	colTitle     = 2
+	colOwner     = 3
+	colStatus    = 4
+	colAct       = 5
+	colErr       = 6
+	colDone      = 7
+	colTotal     = 8
+	colPri       = 9
+	colSpooled   = 10
+	colProjects  = 11
+	colSpoolHost = 12
+	colMetadata  = 13
+	numCols      = 14
+
+	// progressBarWidth is the fixed glyph width of the PROGRESS bar cell.
+	progressBarWidth = 12
 )
 
 // ListModel is the jobs list view model.
@@ -63,6 +67,11 @@ type ListModel struct {
 
 	sortCol int  // column index; default colJID
 	sortAsc bool // ascending; default false (newest JIDs first)
+
+	// titleWidth overrides the TITLE column content width when > 0; when 0 the
+	// TITLE column auto-fills the remaining terminal width. Adjusted by the
+	// user with '<' / '>'.
+	titleWidth int
 
 	// topRow mirrors bubbles/table's internal viewport offset so that
 	// colorizeTable() can map rendered lines back to their job index.
@@ -184,6 +193,19 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			m.loading = true
 			cmds = append(cmds, m.doFetch())
 			return m, tea.Batch(cmds...)
+		case "<", ",":
+			// Shrink the TITLE column.
+			m.titleWidth = m.currentTitleWidth() - 4
+			if m.titleWidth < 10 {
+				m.titleWidth = 10
+			}
+			m.table.SetColumns(m.makeColumns())
+			return m, nil
+		case ">", ".":
+			// Grow the TITLE column.
+			m.titleWidth = m.currentTitleWidth() + 4
+			m.table.SetColumns(m.makeColumns())
+			return m, nil
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			col := int(msg.String()[0] - '1')
 			if m.sortCol == col {
@@ -296,6 +318,8 @@ func (m *ListModel) sortJobs() {
 		switch col {
 		case colJID:
 			less = a.JID < b.JID
+		case colProgress:
+			less = progressFrac(a) < progressFrac(b)
 		case colTitle:
 			less = strings.ToLower(a.Title) < strings.ToLower(b.Title)
 		case colOwner:
@@ -338,6 +362,7 @@ func (m ListModel) buildRows() []table.Row {
 	for _, j := range m.jobs {
 		rows = append(rows, table.Row{
 			fmt.Sprintf("%d", j.JID),
+			progressBarPlain(j, progressBarWidth),
 			j.Title,
 			j.Owner,
 			j.Status,
@@ -355,12 +380,13 @@ func (m ListModel) buildRows() []table.Row {
 	return rows
 }
 
-// colorizeTable takes the rendered table string and prepends a per-row ANSI
-// foreground colour to each data line (skipping the header/separator and the
-// selected row, which keeps its purple bubbles highlight).
+// colorizeTable repaints each data line after the table is rendered: the
+// PROGRESS bar cell gets its per-segment colours and the rest of the row gets
+// the job's status tint. The header/separator and the selected row (which keeps
+// the bubbles highlight) are left untouched.
 func (m ListModel) colorizeTable(tableStr string) string {
 	lines := strings.Split(tableStr, "\n")
-	for i, line := range lines {
+	for i := range lines {
 		if i < 2 {
 			continue // header row + separator line
 		}
@@ -371,12 +397,49 @@ func (m ListModel) colorizeTable(tableStr string) string {
 		if jobIdx == m.table.Cursor() {
 			continue // selected row keeps the purple s.Selected highlight
 		}
-		ansi := statusANSI(m.jobs[jobIdx].Status)
-		if ansi != "" {
-			lines[i] = "\x1b[" + ansi + "m" + line + "\x1b[m"
-		}
+		lines[i] = m.colorizeLine(lines[i], m.jobs[jobIdx])
 	}
 	return strings.Join(lines, "\n")
+}
+
+// colorizeLine tints a single plain-text data line. It locates the progress bar
+// (the first run of block glyphs, which sits right after the numeric JID),
+// replaces it with the coloured bar, and wraps the surrounding text in the
+// job's status colour.
+func (m ListModel) colorizeLine(line string, job models.Job) string {
+	status := statusANSI(job.Status)
+	runes := []rune(line)
+
+	barStart := -1
+	for k, r := range runes {
+		if r == '█' || r == '░' {
+			barStart = k
+			break
+		}
+	}
+	if barStart < 0 {
+		// No bar found (e.g. empty table); tint the whole line.
+		if status == "" {
+			return line
+		}
+		return "\x1b[" + status + "m" + line + "\x1b[m"
+	}
+
+	barEnd := barStart + progressBarWidth
+	if barEnd > len(runes) {
+		barEnd = len(runes)
+	}
+	prefix := string(runes[:barStart])
+	suffix := string(runes[barEnd:])
+	bar := progressBarColored(job, progressBarWidth)
+
+	wrap := func(s string) string {
+		if s == "" || status == "" {
+			return s
+		}
+		return "\x1b[" + status + "m" + s + "\x1b[m"
+	}
+	return wrap(prefix) + bar + wrap(suffix)
 }
 
 // statusANSI maps a job status to an ANSI SGR parameter string (the part that
@@ -501,24 +564,24 @@ func newTable() table.Model {
 	return t
 }
 
-// makeColumns computes column widths by scanning the current job data so that
-// every column (except TITLE) is exactly as wide as its widest value or
-// header, whichever is larger. TITLE gets whatever terminal width remains.
-//
-// Per-column hard caps prevent runaway widths on outlier data.
-// The sorted column gets a ▲/▼ appended to its header title.
-func (m ListModel) makeColumns() []table.Column {
-	// header names in column order
-	names := [numCols]string{
-		"JID", "TITLE", "OWNER", "STATUS", "ACT", "ERR", "DONE", "TOTAL",
-		"PRI", "SPOOLED", "PROJECTS", "SPOOLHOST", "METADATA",
-	}
-	// hard caps on content width (0 = no cap)
-	caps := [numCols]int{0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 25, 25, 35}
+// columnNames are the header labels in column order.
+var columnNames = [numCols]string{
+	"JID", "PROGRESS", "TITLE", "OWNER", "STATUS", "ACT", "ERR", "DONE",
+	"TOTAL", "PRI", "SPOOLED", "PROJECTS", "SPOOLHOST", "METADATA",
+}
 
-	// Start with the header width as the minimum content width.
+// columnCaps are per-column hard caps on content width (0 = no cap). They keep
+// outlier data (long project lists, metadata) from crowding out TITLE.
+var columnCaps = [numCols]int{
+	0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 25, 25, 35,
+}
+
+// columnContentWidths returns the content width of every column by scanning the
+// current job data. Each column (except TITLE) is sized to its widest value or
+// header, capped by columnCaps. TITLE is set to the remaining terminal width.
+func (m ListModel) columnContentWidths() [numCols]int {
 	widths := [numCols]int{}
-	for i, n := range names {
+	for i, n := range columnNames {
 		widths[i] = len(n)
 	}
 	// The sort indicator " ▲" / " ▼" adds 2 visible chars to that column's header.
@@ -526,11 +589,11 @@ func (m ListModel) makeColumns() []table.Column {
 		widths[m.sortCol] += 2
 	}
 
-	// Grow each column to fit its actual data (TITLE excluded — it fills the gap).
 	for _, j := range m.jobs {
 		cells := [numCols]string{
 			strconv.Itoa(j.JID),
-			"", // TITLE: excluded from auto-resize
+			progressBarPlain(j, progressBarWidth),
+			"", // TITLE: excluded from auto-resize (fills remaining width)
 			j.Owner,
 			j.Status,
 			countCell(j.NumActive),
@@ -553,45 +616,144 @@ func (m ListModel) makeColumns() []table.Column {
 		}
 	}
 
-	// Apply hard caps.
 	for col := range widths {
 		if col == colTitle {
 			continue
 		}
-		if caps[col] > 0 && widths[col] > caps[col] {
-			widths[col] = caps[col]
+		if columnCaps[col] > 0 && widths[col] > columnCaps[col] {
+			widths[col] = columnCaps[col]
 		}
 	}
 
-	// TITLE = terminal width minus all other columns (content + 2 padding each).
+	// TITLE auto-fill = terminal width minus all other columns (content + 2
+	// padding each), minus TITLE's own padding.
 	fixedTotal := 0
 	for col, w := range widths {
 		if col != colTitle {
 			fixedTotal += w + 2
 		}
 	}
-	titleContent := m.width - fixedTotal - 2 // -2 for TITLE's own padding
+	titleContent := m.width - fixedTotal - 2
 	if titleContent < 10 {
 		titleContent = 10
 	}
 	widths[colTitle] = titleContent
+	return widths
+}
 
-	// Build the column slice.
-	colTitle_ := func(col int) string {
+// currentTitleWidth returns the effective TITLE content width: the user's
+// override if set, otherwise the auto-filled remaining width.
+func (m ListModel) currentTitleWidth() int {
+	if m.titleWidth > 0 {
+		return m.titleWidth
+	}
+	return m.columnContentWidths()[colTitle]
+}
+
+// makeColumns builds the bubbles/table columns. TITLE honours a user override
+// (set via '<' / '>'); every other column auto-resizes to its content. The
+// sorted column gets a ▲/▼ appended to its header.
+func (m ListModel) makeColumns() []table.Column {
+	widths := m.columnContentWidths()
+	if m.titleWidth > 0 {
+		widths[colTitle] = m.titleWidth
+	}
+
+	header := func(col int) string {
 		if col != m.sortCol {
-			return names[col]
+			return columnNames[col]
 		}
 		if m.sortAsc {
-			return names[col] + " ▲"
+			return columnNames[col] + " ▲"
 		}
-		return names[col] + " ▼"
+		return columnNames[col] + " ▼"
 	}
 
 	cols := make([]table.Column, numCols)
 	for col := range cols {
-		cols[col] = table.Column{Title: colTitle_(col), Width: widths[col] + 2}
+		cols[col] = table.Column{Title: header(col), Width: widths[col] + 2}
 	}
 	return cols
+}
+
+// --- progress bar ---
+
+// progressSegments splits a bar of the given width into done / error / active /
+// remaining character counts, proportional to a job's task counts. The four
+// returned values always sum to width. Non-zero error/active counts are nudged
+// to at least one visible cell when there is room.
+func progressSegments(j models.Job, width int) (done, errs, act, rem int) {
+	total := j.NumTasks
+	if total <= 0 || width <= 0 {
+		if width < 0 {
+			width = 0
+		}
+		return 0, 0, 0, width
+	}
+	round := func(n int) int { return (n*width + total/2) / total }
+	done = round(j.NumDone)
+	errs = round(j.NumError)
+	act = round(j.NumActive)
+
+	if done > width {
+		done = width
+	}
+	if done+errs > width {
+		errs = width - done
+	}
+	if done+errs+act > width {
+		act = width - done - errs
+	}
+	if j.NumError > 0 && errs == 0 && done+act < width {
+		errs = 1
+	}
+	if j.NumActive > 0 && act == 0 && done+errs+act < width {
+		act = 1
+	}
+	rem = width - done - errs - act
+	if rem < 0 {
+		rem = 0
+	}
+	return
+}
+
+// progressBarPlain renders an uncoloured, fixed-width bar (block glyphs only)
+// for use as the table cell value. colorizeTable repaints it per-job after the
+// table is rendered (the table truncator is not ANSI-aware, so colour must not
+// live in the cell value itself).
+func progressBarPlain(j models.Job, width int) string {
+	d, e, a, r := progressSegments(j, width)
+	return strings.Repeat("█", d+e+a) + strings.Repeat("░", r)
+}
+
+// progressBarColored renders the multi-colour bar: done=grey, error=red,
+// active=green, remaining=blank. Each segment carries its own ANSI reset.
+func progressBarColored(j models.Job, width int) string {
+	d, e, a, r := progressSegments(j, width)
+	var b strings.Builder
+	seg := func(n int, color string) {
+		if n <= 0 {
+			return
+		}
+		b.WriteString("\x1b[38;5;" + color + "m")
+		b.WriteString(strings.Repeat("█", n))
+		b.WriteString("\x1b[0m")
+	}
+	seg(d, "240") // done: grey
+	seg(e, "9")   // error: red
+	seg(a, "10")  // active: green
+	if r > 0 {
+		b.WriteString(strings.Repeat(" ", r)) // remaining: nothing
+	}
+	return b.String()
+}
+
+// progressFrac is the completed-task fraction used to sort the PROGRESS column.
+func progressFrac(j models.Job) float64 {
+	if j.NumTasks <= 0 {
+		return 0
+	}
+	return float64(j.NumDone) / float64(j.NumTasks)
 }
 
 // countCell renders a task-count cell, leaving it blank for zero so the ACT
