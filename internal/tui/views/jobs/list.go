@@ -150,13 +150,16 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		m.topRow = 0
 		m.table.SetColumns(m.makeColumns())
 		m.table.SetRows(m.buildRows())
+		// Seed owner autocomplete from the owners present in the result set;
+		// this always works even when getent passwd cannot enumerate LDAP.
+		m.filterBar = m.filterBar.AddUsernames(distinctOwners(msg.jobs))
 
 	case fetchErrMsg:
 		m.loading = false
 		m.err = msg.err
 
 	case usernamesLoadedMsg:
-		m.filterBar = m.filterBar.SetUsernames(msg.names)
+		m.filterBar = m.filterBar.AddUsernames(msg.names)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -772,6 +775,24 @@ func progressFrac(j models.Job) float64 {
 		return 0
 	}
 	return float64(j.NumDone) / float64(j.NumTasks)
+}
+
+// distinctOwners returns the unique, non-empty owner names across the jobs, in
+// first-seen order. Used to seed owner-filter autocomplete from real data.
+func distinctOwners(jobs []models.Job) []string {
+	seen := make(map[string]struct{}, len(jobs))
+	var out []string
+	for _, j := range jobs {
+		if j.Owner == "" {
+			continue
+		}
+		if _, ok := seen[j.Owner]; ok {
+			continue
+		}
+		seen[j.Owner] = struct{}{}
+		out = append(out, j.Owner)
+	}
+	return out
 }
 
 // countCell renders a task-count cell, leaving it blank for zero so the ACT

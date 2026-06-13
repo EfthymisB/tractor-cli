@@ -3,6 +3,7 @@ package filter
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -91,11 +92,27 @@ func New() Model {
 // Active reports whether the form is currently visible.
 func (m Model) Active() bool { return m.active }
 
-// SetUsernames sets the autocomplete source for the owner field. The form
-// renders its own dropdown (see renderDropdown), so we don't enable bubbles'
-// built-in inline suggestions here.
-func (m Model) SetUsernames(u []string) Model {
-	m.usernames = u
+// AddUsernames merges names into the owner autocomplete source, de-duplicating
+// and keeping the list sorted. It is called from multiple sources (getent
+// passwd and the owners present in loaded jobs), so it unions rather than
+// replaces. The form renders its own dropdown (see renderDropdown), so we don't
+// enable bubbles' built-in inline suggestions.
+func (m Model) AddUsernames(names []string) Model {
+	set := make(map[string]struct{}, len(m.usernames)+len(names))
+	for _, u := range m.usernames {
+		set[u] = struct{}{}
+	}
+	for _, u := range names {
+		if u = strings.TrimSpace(u); u != "" {
+			set[u] = struct{}{}
+		}
+	}
+	merged := make([]string, 0, len(set))
+	for u := range set {
+		merged = append(merged, u)
+	}
+	sort.Strings(merged)
+	m.usernames = merged
 	return m
 }
 
