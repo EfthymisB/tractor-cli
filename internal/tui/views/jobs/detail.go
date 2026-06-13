@@ -19,12 +19,25 @@ import (
 	"github.com/tractor-cli/tractor-cli/internal/tui/styles"
 )
 
+// tasksPanelHeight is the height (incl. border) of the bottom task-info panel.
+const tasksPanelHeight = 6
+
 // async messages for the detail view
 type tasksLoadedMsg struct {
 	jid   int
 	tasks []models.Task
 }
 type taskFetchErrMsg struct{ err error }
+
+type taskDetailLoadedMsg struct {
+	jid    int
+	tid    int
+	detail models.TaskDetail
+}
+type taskDetailErrMsg struct {
+	tid int
+	err error
+}
 
 // detail column indices — must match the order in detailColumnNames/buildRows.
 const (
@@ -58,6 +71,11 @@ type DetailModel struct {
 	searching bool
 	sortCol   int
 	sortAsc   bool
+
+	// bottom info panel for the highlighted task
+	detailTID     int
+	taskDetail    models.TaskDetail
+	detailLoading bool
 
 	loading bool
 	err     error
@@ -105,16 +123,21 @@ func (m DetailModel) Load(jid int, title string) (DetailModel, tea.Cmd) {
 	m.search.Blur()
 	m.sortCol = dcolTID
 	m.sortAsc = true
+	m.detailTID = 0
+	m.taskDetail = models.TaskDetail{}
+	m.detailLoading = false
 	m.table.SetRows(nil)
 	return m, tea.Batch(m.fetchTasks(), m.spinner.Tick)
 }
 
-// Refresh re-fetches the current job's tasks.
+// Refresh re-fetches the current job's tasks (and, after they load, the
+// highlighted task's details, so live stats like RSS/CPU update too).
 func (m DetailModel) Refresh() (DetailModel, tea.Cmd) {
 	if m.jid == 0 {
 		return m, nil
 	}
 	m.loading = true
+	m.detailTID = 0 // force the info panel to re-fetch for the current selection
 	return m, m.fetchTasks()
 }
 
@@ -143,11 +166,26 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 		m.allTasks = msg.tasks
 		m.topRow = 0
 		m = m.refreshTable()
-		return m, nil
+		var dcmd tea.Cmd
+		m, dcmd = m.maybeFetchDetail()
+		return m, dcmd
 
 	case taskFetchErrMsg:
 		m.loading = false
 		m.err = msg.err
+		return m, nil
+
+	case taskDetailLoadedMsg:
+		if msg.jid == m.jid && msg.tid == m.detailTID {
+			m.taskDetail = msg.detail
+			m.detailLoading = false
+		}
+		return m, nil
+
+	case taskDetailErrMsg:
+		if msg.tid == m.detailTID {
+			m.detailLoading = false
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -170,12 +208,16 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 				m.search.Blur()
 				m = m.refreshTable()
 				m.table.SetHeight(m.viewportHeight())
-				return m, nil
+				var dcmd tea.Cmd
+				m, dcmd = m.maybeFetchDetail()
+				return m, dcmd
 			}
 			var cmd tea.Cmd
 			m.search, cmd = m.search.Update(msg)
 			m = m.refreshTable()
-			return m, cmd
+			var dcmd tea.Cmd
+			m, dcmd = m.maybeFetchDetail()
+			return m, tea.Batch(cmd, dcmd)
 		}
 
 		switch msg.String() {
@@ -198,6 +240,9 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 				}
 				m.topRow = 0
 				m = m.refreshTable()
+				var dcmd tea.Cmd
+				m, dcmd = m.maybeFetchDetail()
+				return m, dcmd
 			}
 			return m, nil
 		}
@@ -207,8 +252,35 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 	m.table, tableCmd = m.table.Update(msg)
 	cmds = append(cmds, tableCmd)
 	m = m.syncTopRow()
+	var dcmd tea.Cmd
+	m, dcmd = m.maybeFetchDetail()
+	cmds = append(cmds, dcmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+// maybeFetchDetail issues a task-details fetch when the highlighted task has
+// changed since the panel was last populated.
+func (m DetailModel) maybeFetchDetail() (DetailModel, tea.Cmd) {
+	cur := m.SelectedTID()
+	if cur == 0 || cur == m.detailTID {
+		return m, nil
+	}
+	m.detailTID = cur
+	m.taskDetail = models.TaskDetail{}
+	m.detailLoading = true
+	return m, m.fetchDetail(cur)
+}
+
+func (m DetailModel) fetchDetail(tid int) tea.Cmd {
+	jid := m.jid
+	return func() tea.Msg {
+		d, err := m.client.TaskDetails(jid, tid)
+		if err != nil {
+			return taskDetailErrMsg{tid: tid, err: err}
+		}
+		return taskDetailLoadedMsg{jid: jid, tid: tid, detail: d}
+	}
 }
 
 // CapturingInput reports whether the title-search input is consuming keys.
@@ -271,11 +343,52 @@ func (m DetailModel) View() string {
 	if m.searching {
 		out += m.renderSearch() + "\n"
 	}
-	return out + m.colorizeTasks(m.table.View())
+	return out + m.colorizeTasks(m.table.View()) + "\n" + m.renderPanel()
 }
 
 func (m DetailModel) renderSearch() string {
 	return styles.FilterBorder.Width(m.width - 4).Render("Search title: " + m.search.View())
+}
+
+// renderPanel draws the bottom info panel for the highlighted task. Its height
+// is fixed at tasksPanelHeight (4 content lines + border).
+func (m DetailModel) renderPanel() string {
+	var lines []string
+	switch {
+	case m.detailLoading:
+		lines = []string{"Loading task details… " + m.spinner.View()}
+	case m.detailTID == 0:
+		lines = []string{"—"}
+	default:
+		d := m.taskDetail
+		lines = []string{
+			"Command: " + d.Command,
+			fmt.Sprintf("Blades: %s    Service: %s",
+				orDash(strings.Join(d.Blades, ",")), orDash(d.Service)),
+			fmt.Sprintf("RSS: %.0f MB    VSZ: %.0f MB    CPU: %.0f%%    Slots: %d",
+				d.RSSMB, d.VSZMB, d.CPU, d.Slots),
+			fmt.Sprintf("Env: %s    Min/Max Slots: %d/%d    Min/Max Run: %ds/%ds",
+				orDash(d.EnvKey), d.MinSlots, d.MaxSlots, d.MinRunSecs, d.MaxRunSecs),
+		}
+	}
+	for i := range lines {
+		lines[i] = truncRunes(lines[i], m.width-2)
+	}
+	for len(lines) < 4 {
+		lines = append(lines, "")
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Width(m.width - 2).
+		Render(strings.Join(lines[:4], "\n"))
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
 }
 
 // SetSize updates dimensions and resizes the table.
@@ -439,7 +552,7 @@ func (m DetailModel) syncTopRow() DetailModel {
 }
 
 func (m DetailModel) viewportHeight() int {
-	h := m.height - 2
+	h := m.height - 2 - tasksPanelHeight - 1 // panel + its join line
 	if m.searching {
 		h -= 3 // bordered search line
 	}

@@ -133,29 +133,70 @@ func decodeTaskState(s string) (state string, hasLog bool, progress float64) {
 	return
 }
 
-// TaskDetails returns the commands associated with a specific task.
-// Reference: GET /Tractor/monitor?q=taskdetails&jid=1234&tid=11
-func (c *Client) TaskDetails(jid, tid int) ([]json.RawMessage, error) {
+// TaskDetails returns the command/invocation details for a single task, taken
+// from its primary (active, else first) command. Uses q=taskdetails, whose
+// payload is {"metadata":..., "cmds":[...]}.
+func (c *Client) TaskDetails(jid, tid int) (models.TaskDetail, error) {
 	params := c.authenticatedParams()
 	params.Set("q", "taskdetails")
-	params.Set("jid", fmt.Sprintf("%d", jid))
-	params.Set("tid", fmt.Sprintf("%d", tid))
+	params.Set("jid", strconv.Itoa(jid))
+	params.Set("tid", strconv.Itoa(tid))
 
 	b, err := c.get("/Tractor/monitor", params)
 	if err != nil {
-		return nil, fmt.Errorf("TaskDetails: %w", err)
+		return models.TaskDetail{}, fmt.Errorf("TaskDetails: %w", err)
 	}
 
 	var resp struct {
-		RC   int               `json:"rc"`
-		Msg  string            `json:"msg"`
-		Data []json.RawMessage `json:"data"`
+		RC   int    `json:"rc"`
+		Msg  string `json:"msg"`
+		Cmds []struct {
+			Argv       []string `json:"argv"`
+			Blades     []string `json:"blades"`
+			Service    string   `json:"service"`
+			EnvKey     []string `json:"envkey"`
+			State      string   `json:"state"`
+			RSS        float64  `json:"rss"` // gigabytes
+			VSZ        float64  `json:"vsz"` // gigabytes
+			CPU        float64  `json:"cpu"`
+			NumSlots   int      `json:"numslots"`
+			MinSlots   int      `json:"minSlots"`
+			MaxSlots   int      `json:"maxSlots"`
+			MinRunSecs int      `json:"minrunsecs"`
+			MaxRunSecs int      `json:"maxrunsecs"`
+		} `json:"cmds"`
 	}
 	if err := json.Unmarshal(b, &resp); err != nil {
-		return nil, fmt.Errorf("TaskDetails: parsing response: %w", err)
+		return models.TaskDetail{}, fmt.Errorf("TaskDetails: parsing response: %w", err)
 	}
 	if resp.RC != 0 {
-		return nil, fmt.Errorf("TaskDetails: engine error (rc=%d): %s", resp.RC, resp.Msg)
+		return models.TaskDetail{}, fmt.Errorf("TaskDetails: engine error (rc=%d): %s", resp.RC, resp.Msg)
 	}
-	return resp.Data, nil
+	if len(resp.Cmds) == 0 {
+		return models.TaskDetail{}, nil
+	}
+
+	// Prefer the active command; otherwise the first one.
+	pick := resp.Cmds[0]
+	for _, cmd := range resp.Cmds {
+		if cmd.State == "Active" {
+			pick = cmd
+			break
+		}
+	}
+
+	return models.TaskDetail{
+		Command:    strings.Join(pick.Argv, " "),
+		Blades:     pick.Blades,
+		Service:    pick.Service,
+		EnvKey:     strings.Join(pick.EnvKey, ","),
+		RSSMB:      pick.RSS * 1024,
+		VSZMB:      pick.VSZ * 1024,
+		CPU:        pick.CPU,
+		Slots:      pick.NumSlots,
+		MinSlots:   pick.MinSlots,
+		MaxSlots:   pick.MaxSlots,
+		MinRunSecs: pick.MinRunSecs,
+		MaxRunSecs: pick.MaxRunSecs,
+	}, nil
 }
