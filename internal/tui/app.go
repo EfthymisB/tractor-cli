@@ -14,6 +14,7 @@ import (
 	"github.com/tractor-cli/tractor-cli/internal/config"
 	"github.com/tractor-cli/tractor-cli/internal/tui/styles"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/jobs"
+	"github.com/tractor-cli/tractor-cli/internal/tui/views/logview"
 )
 
 type tickMsg time.Time
@@ -34,6 +35,7 @@ type Model struct {
 
 	jobsList jobs.ListModel
 	detail   jobs.DetailModel
+	logView  logview.Model
 
 	client *api.Client
 	cfg    *config.Config
@@ -55,6 +57,7 @@ func New(client *api.Client, cfg *config.Config) Model {
 		activeView: ViewJobsList,
 		jobsList:   jobs.New(client, cfg),
 		detail:     jobs.NewDetail(client, cfg),
+		logView:    logview.New(client, cfg),
 		client:     client,
 		cfg:        cfg,
 		spinner:    sp,
@@ -79,6 +82,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Give each child everything except the bottom status bar line.
 		m.jobsList = m.jobsList.SetSize(m.width, m.height-1)
 		m.detail = m.detail.SetSize(m.width, m.height-1)
+		m.logView = m.logView.SetSize(m.width, m.height-1)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -113,21 +117,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "enter":
-			// On the jobs list, open the selected job's task detail view.
-			if m.activeView == ViewJobsList && !capturing {
+			if capturing {
+				break
+			}
+			switch m.activeView {
+			case ViewJobsList:
+				// Open the selected job's task detail view.
 				if jid := m.jobsList.SelectedJID(); jid > 0 {
 					m.activeView = ViewJobDetail
 					var cmd tea.Cmd
 					m.detail, cmd = m.detail.Load(jid, m.jobsList.SelectedTitle())
 					return m, cmd
 				}
+			case ViewJobDetail:
+				// Open the highlighted task's log.
+				if tid := m.detail.SelectedTID(); tid > 0 {
+					m.activeView = ViewTaskLog
+					var cmd tea.Cmd
+					m.logView, cmd = m.logView.Load(m.detail.JID(), tid, "")
+					return m, cmd
+				}
 			}
 		case "esc":
-			// Return from the detail view to the jobs list, unless its search
-			// box is open (it handles Esc itself to clear the search).
-			if m.activeView == ViewJobDetail && !capturing {
-				m.activeView = ViewJobsList
-				return m, nil
+			// Walk back one view level, unless a search box is open (the view
+			// handles Esc itself to clear its search).
+			if !capturing {
+				switch m.activeView {
+				case ViewTaskLog:
+					m.activeView = ViewJobDetail
+					return m, nil
+				case ViewJobDetail:
+					m.activeView = ViewJobsList
+					return m, nil
+				}
 			}
 		}
 
@@ -149,6 +171,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Delegate everything else to the active child model.
 	var childCmd tea.Cmd
 	switch m.activeView {
+	case ViewTaskLog:
+		m.logView, childCmd = m.logView.Update(msg)
 	case ViewJobDetail:
 		m.detail, childCmd = m.detail.Update(msg)
 	default:
@@ -168,6 +192,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // should receive raw keystrokes (filter form or task search).
 func (m Model) capturingInput() bool {
 	switch m.activeView {
+	case ViewTaskLog:
+		return m.logView.CapturingInput()
 	case ViewJobDetail:
 		return m.detail.CapturingInput()
 	default:
@@ -184,6 +210,8 @@ func (m Model) View() string {
 	}
 	var body string
 	switch m.activeView {
+	case ViewTaskLog:
+		body = m.logView.View()
 	case ViewJobDetail:
 		body = m.detail.View()
 	default:
@@ -212,8 +240,8 @@ func (m Model) renderHelp() string {
 		row("↑/↓  j/k", "Move selection"),
 		row("PgUp/PgDn", "Page up / down"),
 		row("g / G", "Jump to top / bottom"),
-		row("Enter", "Open selected job's tasks"),
-		row("Esc", "Back to job list"),
+		row("Enter", "Open job tasks, then a task's log"),
+		row("Esc", "Back one level"),
 	) + "\n\n")
 	b.WriteString(section("Filtering & view",
 		row("/", "Open filter form"),
@@ -253,12 +281,16 @@ func (m Model) statusBar() string {
 	var left string
 	var loading bool
 	var err error
-	if m.activeView == ViewJobDetail {
+	switch m.activeView {
+	case ViewTaskLog:
+		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Job %d  │  Task %d  │  log",
+			user, host, m.logView.JID(), m.logView.TID())
+	case ViewJobDetail:
 		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Job %d  │  Tasks: %d",
 			user, host, m.detail.JID(), m.detail.TaskCount())
 		loading = m.detail.IsLoading()
 		err = m.detail.Err()
-	} else {
+	default:
 		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Jobs: %d",
 			user, host, m.jobsList.JobCount())
 		loading = m.jobsList.IsLoading()
@@ -278,7 +310,7 @@ func (m Model) statusBar() string {
 	}
 
 	right := " [?] help  [q] quit "
-	if m.activeView == ViewJobDetail {
+	if m.activeView != ViewJobsList {
 		right = " [Esc] back  [?] help  [q] quit "
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)

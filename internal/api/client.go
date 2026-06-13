@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -84,6 +85,21 @@ func (c *Client) postJSON(path string, payload any) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return c.do(req)
+}
+
+// getLogURI fetches a logging-service URI returned by q=tasklogs. Absolute
+// URIs are used as-is; relative ones are resolved against the engine base URL.
+// The TractorUser cookie is sent in case the logging service requires it.
+func (c *Client) getLogURI(uri string) ([]byte, error) {
+	full := uri
+	if !strings.HasPrefix(uri, "http://") && !strings.HasPrefix(uri, "https://") {
+		full = c.baseURL + uri
+	}
+	req, err := http.NewRequest(http.MethodGet, full, nil)
+	if err != nil {
+		return nil, err
+	}
 	return c.do(req)
 }
 

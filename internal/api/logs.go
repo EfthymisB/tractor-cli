@@ -3,51 +3,57 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
-// taskLogsResponse is the envelope returned by /Tractor/monitor?q=tasklogs.
+// taskLogsResponse is the envelope returned by /Tractor/monitor?q=tasklogs. The
+// engine answers with one or more logging-service URIs rather than inline text.
 type taskLogsResponse struct {
-	RC  int    `json:"rc"`
-	Msg string `json:"msg"`
-	Log string `json:"log"`
-	URL string `json:"url"`
+	RC              int      `json:"rc"`
+	Msg             string   `json:"msg"`
+	LoggingRedirect []string `json:"LoggingRedirect"`
 }
 
-// FetchLog retrieves the log for a specific task.
-// Reference: GET /Tractor/monitor?q=tasklogs&owner=name&jid=1234&tid=11
-func (c *Client) FetchLog(owner string, jid, tid int) (string, error) {
+// TaskLog retrieves and concatenates the command logs for a task. The engine
+// returns log URIs (LoggingRedirect); each is fetched and joined in order.
+// owner is optional and may be "".
+func (c *Client) TaskLog(jid, tid int, owner string) (string, error) {
 	params := c.authenticatedParams()
 	params.Set("q", "tasklogs")
-	params.Set("owner", owner)
-	params.Set("jid", fmt.Sprintf("%d", jid))
-	params.Set("tid", fmt.Sprintf("%d", tid))
+	params.Set("jid", strconv.Itoa(jid))
+	params.Set("tid", strconv.Itoa(tid))
+	if owner != "" {
+		params.Set("owner", owner)
+	}
 
 	b, err := c.get("/Tractor/monitor", params)
 	if err != nil {
-		return "", fmt.Errorf("FetchLog: %w", err)
+		return "", fmt.Errorf("TaskLog: %w", err)
 	}
 
-	// The engine may return the log URL or inline log content.
 	var resp taskLogsResponse
 	if err := json.Unmarshal(b, &resp); err != nil {
-		// Plain-text log returned directly.
+		// Some engines may return the log text directly.
 		return string(b), nil
 	}
 	if resp.RC != 0 {
-		return "", fmt.Errorf("FetchLog: engine error (rc=%d): %s", resp.RC, resp.Msg)
+		return "", fmt.Errorf("TaskLog: engine error (rc=%d): %s", resp.RC, resp.Msg)
 	}
-	if resp.Log != "" {
-		return resp.Log, nil
+	if len(resp.LoggingRedirect) == 0 {
+		return "", nil
 	}
-	// If only a URL was returned, fetch the actual log content.
-	if resp.URL != "" {
-		content, err := c.get(resp.URL, nil)
+
+	var sb strings.Builder
+	for _, uri := range resp.LoggingRedirect {
+		body, err := c.getLogURI(uri)
 		if err != nil {
-			return "", fmt.Errorf("FetchLog: fetching log URL: %w", err)
+			fmt.Fprintf(&sb, "\n[tractor-cli: error fetching log segment %s: %v]\n", uri, err)
+			continue
 		}
-		return string(content), nil
+		sb.Write(body)
 	}
-	return "", nil
+	return sb.String(), nil
 }
 
 // parseRC checks a raw JSON response for rc/msg fields and returns an error if rc != 0.
