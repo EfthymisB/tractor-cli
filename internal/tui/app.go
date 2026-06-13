@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -37,6 +38,8 @@ type Model struct {
 	cfg    *config.Config
 
 	spinner spinner.Model
+
+	showHelp bool
 
 	width, height int
 }
@@ -76,6 +79,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// While the help overlay is up it owns the keyboard: any key dismisses
+		// it (ctrl+c still quits) and nothing reaches the list underneath.
+		if m.showHelp {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.showHelp = false
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -84,6 +97,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// may be part of a username or title being typed.
 			if !m.jobsList.CapturingInput() {
 				return m, tea.Quit
+			}
+		case "?":
+			// Open help, unless the filter form wants the literal "?".
+			if !m.jobsList.CapturingInput() {
+				m.showHelp = true
+				return m, nil
 			}
 		}
 
@@ -114,12 +133,67 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return ""
 	}
+	if m.showHelp {
+		return m.renderHelp() + "\n" + m.statusBar()
+	}
 	var body string
 	switch m.activeView {
 	case ViewJobsList:
 		body = m.jobsList.View()
 	}
 	return body + "\n" + m.statusBar()
+}
+
+// renderHelp draws the keyboard-shortcut overlay, centred in the body area.
+func (m Model) renderHelp() string {
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	hdrStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Bold(true)
+
+	row := func(k, d string) string {
+		return keyStyle.Render(fmt.Sprintf("%-16s", k)) + descStyle.Render(d)
+	}
+	section := func(name string, rows ...string) string {
+		return hdrStyle.Render(name) + "\n" + strings.Join(rows, "\n")
+	}
+
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).
+		Render("Keyboard Shortcuts") + "\n\n")
+	b.WriteString(section("Navigation",
+		row("↑/↓  j/k", "Move selection"),
+		row("PgUp/PgDn", "Page up / down"),
+		row("g / G", "Jump to top / bottom"),
+	) + "\n\n")
+	b.WriteString(section("Filtering & view",
+		row("/", "Open filter form"),
+		row("c", "Clear all filters"),
+		row("m", "Toggle my jobs"),
+		row("e", "Toggle errors only"),
+		row("R", "Refresh now"),
+	) + "\n\n")
+	b.WriteString(section("Columns",
+		row("1 – 9", "Sort by column (press again to reverse)"),
+		row("< / >", "Shrink / grow TITLE column"),
+	) + "\n\n")
+	b.WriteString(section("Filter form",
+		row("Tab / ⇧Tab", "Move between fields"),
+		row("Space", "Toggle status chip"),
+		row("→", "Accept owner autocomplete"),
+		row("Enter / Esc", "Apply / cancel"),
+	) + "\n\n")
+	b.WriteString(section("General",
+		row("?", "Toggle this help"),
+		row("q", "Quit"),
+	))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("86")).
+		Padding(1, 3).
+		Render(b.String())
+
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m Model) statusBar() string {

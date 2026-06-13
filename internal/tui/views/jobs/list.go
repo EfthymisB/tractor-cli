@@ -193,6 +193,15 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			m.loading = true
 			cmds = append(cmds, m.doFetch())
 			return m, tea.Batch(cmds...)
+		case "c":
+			// Clear every active filter (server-side filter, my-jobs and
+			// errors-only toggles) and reload the full job list.
+			m.apiFilter = api.JobFilter{}
+			m.myJobs = false
+			m.errOnly = false
+			m.loading = true
+			cmds = append(cmds, m.doFetch())
+			return m, tea.Batch(cmds...)
 		case "<", ",":
 			// Shrink the TITLE column.
 			m.titleWidth = m.currentTitleWidth() - 4
