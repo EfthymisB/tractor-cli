@@ -77,8 +77,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			return m, tea.Quit
+		case "q":
+			// Don't quit while the filter form is capturing keystrokes — "q"
+			// may be part of a username or title being typed.
+			if !m.jobsList.CapturingInput() {
+				return m, tea.Quit
+			}
 		}
 
 	case tickMsg:

@@ -21,7 +21,7 @@ func (c *Client) RawJobsResponse() ([]byte, error) {
 // All slice fields use OR semantics within the field; all fields AND together.
 type JobFilter struct {
 	Owners   []string // owner must match one of these (case-insensitive)
-	Status   string   // exact status; "" = no filter
+	Statuses []string // job status must be one of these; empty = no filter
 	Title    string   // case-insensitive substring; "" = no filter
 	JIDs     []int    // job must have one of these JIDs
 	JIDFrom  int      // inclusive range start; 0 = unset
@@ -32,7 +32,7 @@ type JobFilter struct {
 
 // IsEmpty reports whether no filter criteria are set.
 func (f JobFilter) IsEmpty() bool {
-	return len(f.Owners) == 0 && f.Status == "" && f.Title == "" &&
+	return len(f.Owners) == 0 && len(f.Statuses) == 0 && f.Title == "" &&
 		len(f.JIDs) == 0 && f.JIDFrom == 0 && f.JIDTo == 0 &&
 		f.Priority == 0 && len(f.Projects) == 0
 }
@@ -277,18 +277,25 @@ func buildSelectWhere(f JobFilter) string {
 		parts = append(parts, fmt.Sprintf("jid>=%d and jid<=%d", f.JIDFrom, f.JIDTo))
 	}
 
-	// Status (Tractor WHERE aliases — bare keywords, not SQL).
-	switch f.Status {
-	case "active":
-		parts = append(parts, "active")
-	case "error":
-		parts = append(parts, "error")
-	case "done":
-		parts = append(parts, "done")
-	case "blocked":
-		parts = append(parts, "blocked")
-	case "paused":
-		parts = append(parts, "pausetime is not null")
+	// Status(es) — OR'd together using Tractor WHERE aliases (bare keywords).
+	if len(f.Statuses) > 0 {
+		var statusParts []string
+		for _, s := range f.Statuses {
+			switch s {
+			case "active", "error", "done", "blocked":
+				statusParts = append(statusParts, s)
+			case "paused":
+				statusParts = append(statusParts, "pausetime is not null")
+			}
+		}
+		switch len(statusParts) {
+		case 1:
+			parts = append(parts, statusParts[0])
+		case 0:
+			// nothing recognised
+		default:
+			parts = append(parts, "("+strings.Join(statusParts, " or ")+")")
+		}
 	}
 
 	// Priority — exact numeric match.
@@ -352,9 +359,18 @@ func matchesFilter(j models.Job, f JobFilter) bool {
 		}
 	}
 
-	// Status: exact match.
-	if f.Status != "" && j.Status != f.Status {
-		return false
+	// Status: job status must be one of the selected statuses.
+	if len(f.Statuses) > 0 {
+		matched := false
+		for _, s := range f.Statuses {
+			if j.Status == s {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
 	}
 
 	// Priority: exact match.

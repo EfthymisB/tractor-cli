@@ -18,11 +18,13 @@ import (
 	"github.com/tractor-cli/tractor-cli/internal/models"
 	"github.com/tractor-cli/tractor-cli/internal/tui/styles"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/filter"
+	"github.com/tractor-cli/tractor-cli/internal/users"
 )
 
 // internal async messages
 type jobsLoadedMsg struct{ jobs []models.Job }
 type fetchErrMsg struct{ err error }
+type usernamesLoadedMsg struct{ names []string }
 
 // column indices — must match the order returned by makeColumns.
 const (
@@ -87,9 +89,17 @@ func New(client *api.Client, cfg *config.Config) ListModel {
 	}
 }
 
-// Init kicks off the initial jobs fetch.
+// Init kicks off the initial jobs fetch and loads usernames for autocomplete.
 func (m ListModel) Init() tea.Cmd {
-	return tea.Batch(m.doFetch(), m.spinner.Tick)
+	return tea.Batch(m.doFetch(), m.spinner.Tick, loadUsernames())
+}
+
+// loadUsernames fetches the system/LDAP username list (getent passwd) in the
+// background for the owner-filter autocomplete.
+func loadUsernames() tea.Cmd {
+	return func() tea.Msg {
+		return usernamesLoadedMsg{names: users.List()}
+	}
 }
 
 // Update handles messages for the jobs list.
@@ -134,6 +144,9 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		m.loading = false
 		m.err = msg.err
 
+	case usernamesLoadedMsg:
+		m.filterBar = m.filterBar.SetUsernames(msg.names)
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -143,7 +156,7 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		switch msg.String() {
 		case "/":
 			var cmd tea.Cmd
-			m.filterBar, cmd = m.filterBar.Open()
+			m.filterBar, cmd = m.filterBar.Open(m.apiFilter)
 			cmds = append(cmds, cmd)
 			m = m.recalcTableHeight()
 			return m, tea.Batch(cmds...)
@@ -230,6 +243,11 @@ func (m ListModel) JobCount() int          { return len(m.jobs) }
 func (m ListModel) IsLoading() bool        { return m.loading }
 func (m ListModel) LastRefresh() time.Time { return m.lastRefresh }
 func (m ListModel) Err() error             { return m.err }
+
+// CapturingInput reports whether a child component (the filter form) is
+// currently consuming raw keystrokes, so the root model must not treat keys
+// like "q" as global shortcuts.
+func (m ListModel) CapturingInput() bool { return m.filterBar.Active() }
 
 // SelectedJID returns the JID of the currently highlighted row, or 0.
 func (m ListModel) SelectedJID() int {
@@ -399,7 +417,7 @@ func (m ListModel) syncTopRow() ListModel {
 func (m ListModel) viewportHeight() int {
 	h := m.height - 2
 	if m.filterBar.Active() {
-		h -= 3
+		h -= m.filterBar.Height() + 1 // form lines + the blank join line
 	}
 	if h < 1 {
 		h = 1
@@ -432,8 +450,8 @@ func (m ListModel) renderHeader() string {
 	if len(m.apiFilter.Owners) > 0 {
 		tags = append(tags, "owner:"+strings.Join(m.apiFilter.Owners, ","))
 	}
-	if m.apiFilter.Status != "" {
-		tags = append(tags, "status:"+m.apiFilter.Status)
+	if len(m.apiFilter.Statuses) > 0 {
+		tags = append(tags, "status:"+strings.Join(m.apiFilter.Statuses, ","))
 	}
 	if m.apiFilter.Priority != 0 {
 		tags = append(tags, fmt.Sprintf("prio:%.0f", m.apiFilter.Priority))
