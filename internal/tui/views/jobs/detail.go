@@ -2,12 +2,14 @@ package jobs
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -46,10 +48,16 @@ var detailColumnCaps = [dNumCols]int{0, 0, 0, 0, 20, 24, 0}
 type DetailModel struct {
 	table   table.Model
 	spinner spinner.Model
+	search  textinput.Model
 
 	jid      int
 	jobTitle string
-	tasks    []models.Task
+	allTasks []models.Task // unfiltered
+	tasks    []models.Task // after title filter + sort
+
+	searching bool
+	sortCol   int
+	sortAsc   bool
 
 	loading bool
 	err     error
@@ -66,9 +74,18 @@ func NewDetail(client *api.Client, cfg *config.Config) DetailModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
+
+	ti := textinput.New()
+	ti.Placeholder = "title…"
+	ti.Prompt = ""
+	ti.CharLimit = 128
+
 	return DetailModel{
 		table:   newTable(),
 		spinner: sp,
+		search:  ti,
+		sortCol: dcolTID,
+		sortAsc: true,
 		client:  client,
 		cfg:     cfg,
 	}
@@ -78,10 +95,16 @@ func NewDetail(client *api.Client, cfg *config.Config) DetailModel {
 func (m DetailModel) Load(jid int, title string) (DetailModel, tea.Cmd) {
 	m.jid = jid
 	m.jobTitle = title
+	m.allTasks = nil
 	m.tasks = nil
 	m.err = nil
 	m.loading = true
 	m.topRow = 0
+	m.searching = false
+	m.search.SetValue("")
+	m.search.Blur()
+	m.sortCol = dcolTID
+	m.sortAsc = true
 	m.table.SetRows(nil)
 	return m, tea.Batch(m.fetchTasks(), m.spinner.Tick)
 }
@@ -117,14 +140,15 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 		}
 		m.loading = false
 		m.err = nil
-		m.tasks = msg.tasks
+		m.allTasks = msg.tasks
 		m.topRow = 0
-		m.table.SetColumns(m.makeColumns())
-		m.table.SetRows(m.buildRows())
+		m = m.refreshTable()
+		return m, nil
 
 	case taskFetchErrMsg:
 		m.loading = false
 		m.err = msg.err
+		return m, nil
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -132,10 +156,50 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 		cmds = append(cmds, cmd)
 
 	case tea.KeyMsg:
-		if msg.String() == "R" {
+		// While the title search is open it owns the keyboard.
+		if m.searching {
+			switch msg.String() {
+			case "enter":
+				m.searching = false
+				m.search.Blur()
+				m.table.SetHeight(m.viewportHeight())
+				return m, nil
+			case "esc":
+				m.searching = false
+				m.search.SetValue("")
+				m.search.Blur()
+				m = m.refreshTable()
+				m.table.SetHeight(m.viewportHeight())
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.search, cmd = m.search.Update(msg)
+			m = m.refreshTable()
+			return m, cmd
+		}
+
+		switch msg.String() {
+		case "/":
+			m.searching = true
+			m.table.SetHeight(m.viewportHeight())
+			return m, m.search.Focus()
+		case "R":
 			var cmd tea.Cmd
 			m, cmd = m.Refresh()
 			return m, cmd
+		case "1", "2", "3", "4", "5", "6", "7":
+			col := int(msg.String()[0] - '1')
+			if col >= 0 && col < dNumCols {
+				if m.sortCol == col {
+					m.sortAsc = !m.sortAsc
+				} else {
+					m.sortCol = col
+					m.sortAsc = true
+				}
+				m.topRow = 0
+				m = m.refreshTable()
+			}
+			return m, nil
 		}
 	}
 
@@ -147,12 +211,71 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// CapturingInput reports whether the title-search input is consuming keys.
+func (m DetailModel) CapturingInput() bool { return m.searching }
+
+// refreshTable recomputes the filtered/sorted task slice and repopulates the
+// bubbles table.
+func (m DetailModel) refreshTable() DetailModel {
+	m.tasks = m.filterSortTasks()
+	m.table.SetColumns(m.makeColumns())
+	m.table.SetRows(m.buildRows())
+	return m
+}
+
+// filterSortTasks applies the title filter then the active column sort.
+func (m DetailModel) filterSortTasks() []models.Task {
+	q := strings.ToLower(strings.TrimSpace(m.search.Value()))
+	out := make([]models.Task, 0, len(m.allTasks))
+	for _, t := range m.allTasks {
+		if q == "" || strings.Contains(strings.ToLower(t.Title), q) {
+			out = append(out, t)
+		}
+	}
+	col, asc := m.sortCol, m.sortAsc
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		var less bool
+		switch col {
+		case dcolTID:
+			less = a.TID < b.TID
+		case dcolTitle:
+			less = strings.ToLower(a.Title) < strings.ToLower(b.Title)
+		case dcolState:
+			less = a.State < b.State
+		case dcolProgress:
+			less = a.Progress < b.Progress
+		case dcolBlade:
+			less = a.Blade < b.Blade
+		case dcolService:
+			less = a.Service < b.Service
+		case dcolActive:
+			less = a.ActiveTime < b.ActiveTime
+		default:
+			less = a.TID < b.TID
+		}
+		if asc {
+			return less
+		}
+		return !less
+	})
+	return out
+}
+
 // View renders the detail view.
 func (m DetailModel) View() string {
 	if m.width == 0 {
 		return ""
 	}
-	return m.renderHeader() + "\n" + m.colorizeTasks(m.table.View())
+	out := m.renderHeader() + "\n"
+	if m.searching {
+		out += m.renderSearch() + "\n"
+	}
+	return out + m.colorizeTasks(m.table.View())
+}
+
+func (m DetailModel) renderSearch() string {
+	return styles.FilterBorder.Width(m.width - 4).Render("Search title: " + m.search.View())
 }
 
 // SetSize updates dimensions and resizes the table.
@@ -187,13 +310,15 @@ func (m DetailModel) renderHeader() string {
 	if m.jobTitle != "" {
 		title += "  " + m.jobTitle
 	}
-	if !m.loading {
-		title += fmt.Sprintf("  (%d tasks)", len(m.tasks))
-	} else {
+	if m.loading {
 		title += "  " + m.spinner.View()
+	} else if len(m.tasks) != len(m.allTasks) {
+		title += fmt.Sprintf("  (%d/%d tasks)", len(m.tasks), len(m.allTasks))
+	} else {
+		title += fmt.Sprintf("  (%d tasks)", len(m.tasks))
 	}
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-		Render("   [Esc] back  [R] refresh")
+		Render("   [Esc] back  [/] search  [1-7] sort  [R] refresh")
 	return styles.Title.Render(title) + hint
 }
 
@@ -239,6 +364,9 @@ func (m DetailModel) makeColumns() []table.Column {
 	for i, n := range detailColumnNames {
 		widths[i] = len(n)
 	}
+	if m.sortCol >= 0 && m.sortCol < dNumCols {
+		widths[m.sortCol] += 2 // room for the ▲/▼ sort indicator
+	}
 	for _, t := range m.tasks {
 		cells := [dNumCols]string{
 			strconv.Itoa(t.TID),
@@ -279,9 +407,18 @@ func (m DetailModel) makeColumns() []table.Column {
 	}
 	widths[dcolTitle] = titleContent
 
+	header := func(col int) string {
+		if col != m.sortCol {
+			return detailColumnNames[col]
+		}
+		if m.sortAsc {
+			return detailColumnNames[col] + " ▲"
+		}
+		return detailColumnNames[col] + " ▼"
+	}
 	cols := make([]table.Column, dNumCols)
 	for col := range cols {
-		cols[col] = table.Column{Title: detailColumnNames[col], Width: widths[col] + 2}
+		cols[col] = table.Column{Title: header(col), Width: widths[col] + 2}
 	}
 	return cols
 }
@@ -303,6 +440,9 @@ func (m DetailModel) syncTopRow() DetailModel {
 
 func (m DetailModel) viewportHeight() int {
 	h := m.height - 2
+	if m.searching {
+		h -= 3 // bordered search line
+	}
 	if h < 1 {
 		h = 1
 	}

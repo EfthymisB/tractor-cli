@@ -92,25 +92,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// A child view is "capturing" when it has a focused text input (the
+		// filter form, or the task-search box) that should receive raw keys.
+		capturing := m.capturingInput()
+
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
-			// Don't quit while the filter form is capturing keystrokes — "q"
-			// may be part of a username or title being typed.
-			if m.activeView == ViewJobsList && m.jobsList.CapturingInput() {
+			// Don't quit while an input is capturing keystrokes — "q" may be
+			// part of a username or title being typed.
+			if capturing {
 				break
 			}
 			return m, tea.Quit
 		case "?":
-			// Open help, unless the filter form wants the literal "?".
-			if !(m.activeView == ViewJobsList && m.jobsList.CapturingInput()) {
+			// Open help, unless an input wants the literal "?".
+			if !capturing {
 				m.showHelp = true
 				return m, nil
 			}
 		case "enter":
 			// On the jobs list, open the selected job's task detail view.
-			if m.activeView == ViewJobsList && !m.jobsList.CapturingInput() {
+			if m.activeView == ViewJobsList && !capturing {
 				if jid := m.jobsList.SelectedJID(); jid > 0 {
 					m.activeView = ViewJobDetail
 					var cmd tea.Cmd
@@ -119,8 +123,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "esc":
-			// Return from the detail view to the jobs list.
-			if m.activeView == ViewJobDetail {
+			// Return from the detail view to the jobs list, unless its search
+			// box is open (it handles Esc itself to clear the search).
+			if m.activeView == ViewJobDetail && !capturing {
 				m.activeView = ViewJobsList
 				return m, nil
 			}
@@ -157,6 +162,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, spinCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+// capturingInput reports whether the active view has a focused text input that
+// should receive raw keystrokes (filter form or task search).
+func (m Model) capturingInput() bool {
+	switch m.activeView {
+	case ViewJobDetail:
+		return m.detail.CapturingInput()
+	default:
+		return m.jobsList.CapturingInput()
+	}
 }
 
 func (m Model) View() string {
