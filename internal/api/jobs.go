@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -70,7 +69,7 @@ func (r rawJobData) toJob() models.Job {
 		SpoolTime: r.SpoolDate,
 		SpoolHost: r.SpoolHost,
 		Projects:  formatProjects(r.Projects),
-		Metadata:  formatMetadata(r.Metadata),
+		Metadata:  r.Metadata,
 		NumTasks:  numTotal,
 		NumDone:   numDone,
 		NumError:  numError,
@@ -115,7 +114,7 @@ func (r selectJobRow) toJob() models.Job {
 		SpoolTime: spoolDate,
 		SpoolHost: r.SpoolHost,
 		Projects:  formatProjects(r.Projects),
-		Metadata:  formatMetadata(r.Metadata),
+		Metadata:  r.Metadata,
 		NumTasks:  r.NumTasks,
 		NumDone:   r.NumDone,
 		NumError:  r.NumError,
@@ -420,28 +419,4 @@ func formatProjects(v interface{}) string {
 		return strings.Join(parts, ",")
 	}
 	return fmt.Sprintf("%v", v)
-}
-
-// formatMetadata formats the metadata TextField for display.  When the value
-// is a JSON object (the common pipeline convention) the dict values are sorted
-// by key and joined with "/" — e.g. {"show":"film","seq":"abc","shot":"001"}
-// becomes "film/abc/001".  Plain strings are returned as-is.
-func formatMetadata(s string) string {
-	if s == "" {
-		return ""
-	}
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(s), &m); err != nil || len(m) == 0 {
-		return s
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%v", m[k]))
-	}
-	return strings.Join(parts, "/")
 }

@@ -2,6 +2,7 @@
 package jobs
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -41,11 +42,13 @@ const (
 	colSpooled   = 10
 	colProjects  = 11
 	colSpoolHost = 12
-	colMetadata  = 13
-	numCols      = 14
+	numCols      = 13
 
 	// progressBarWidth is the fixed glyph width of the PROGRESS bar cell.
 	progressBarWidth = 12
+
+	// jobsPanelHeight is the height (incl. border) of the bottom metadata panel.
+	jobsPanelHeight = 3
 )
 
 // ListModel is the jobs list view model.
@@ -262,10 +265,37 @@ func (m ListModel) View() string {
 	}
 	header := m.renderHeader()
 	tableView := m.colorizeTable(m.table.View())
+	panel := m.renderPanel()
 	if m.filterBar.Active() {
-		return header + "\n" + m.filterBar.View(m.width) + "\n" + tableView
+		return header + "\n" + m.filterBar.View(m.width) + "\n" + tableView + "\n" + panel
 	}
-	return header + "\n" + tableView
+	return header + "\n" + tableView + "\n" + panel
+}
+
+// renderPanel draws the bottom info panel showing the highlighted job's
+// metadata. Its height is fixed at jobsPanelHeight.
+func (m ListModel) renderPanel() string {
+	content := "Metadata:  "
+	if job, ok := m.selectedJob(); ok {
+		content += metadataDisplay(job.Metadata)
+	} else {
+		content += "—"
+	}
+	content = truncRunes(content, m.width-2)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Width(m.width - 2).
+		Render(content)
+}
+
+// selectedJob returns the job under the cursor, mirroring the table row order.
+func (m ListModel) selectedJob() (models.Job, bool) {
+	c := m.table.Cursor()
+	if c < 0 || c >= len(m.jobs) {
+		return models.Job{}, false
+	}
+	return m.jobs[c], true
 }
 
 // Refresh triggers a background re-fetch and marks the model as loading.
@@ -372,8 +402,6 @@ func (m *ListModel) sortJobs() {
 			less = a.Projects < b.Projects
 		case colSpoolHost:
 			less = a.SpoolHost < b.SpoolHost
-		case colMetadata:
-			less = a.Metadata < b.Metadata
 		default:
 			less = a.JID < b.JID
 		}
@@ -404,7 +432,6 @@ func (m ListModel) buildRows() []table.Row {
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
 			j.SpoolHost,
-			j.Metadata,
 		})
 	}
 	return rows
@@ -511,7 +538,7 @@ func (m ListModel) syncTopRow() ListModel {
 // viewportHeight returns the number of visible data rows in the table.
 // Must match the value passed to table.SetHeight() in recalcTableHeight().
 func (m ListModel) viewportHeight() int {
-	h := m.height - 2
+	h := m.height - 2 - jobsPanelHeight - 1 // panel + its join line
 	if m.filterBar.Active() {
 		h -= m.filterBar.Height() + 1 // form lines + the blank join line
 	}
@@ -597,13 +624,13 @@ func newTable() table.Model {
 // columnNames are the header labels in column order.
 var columnNames = [numCols]string{
 	"JID", "PROGRESS", "TITLE", "OWNER", "STATUS", "ACT", "ERR", "DONE",
-	"TOTAL", "PRI", "SPOOLED", "PROJECTS", "SPOOLHOST", "METADATA",
+	"TOTAL", "PRI", "SPOOLED", "PROJECTS", "SPOOLHOST",
 }
 
 // columnCaps are per-column hard caps on content width (0 = no cap). They keep
-// outlier data (long project lists, metadata) from crowding out TITLE.
+// outlier data (long project lists) from crowding out TITLE.
 var columnCaps = [numCols]int{
-	0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 25, 25, 35,
+	0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 25, 25,
 }
 
 // columnContentWidths returns the content width of every column by scanning the
@@ -634,7 +661,6 @@ func (m ListModel) columnContentWidths() [numCols]int {
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
 			j.SpoolHost,
-			j.Metadata,
 		}
 		for col, cell := range cells {
 			if col == colTitle {
@@ -784,6 +810,45 @@ func progressFrac(j models.Job) float64 {
 		return 0
 	}
 	return float64(j.NumDone) / float64(j.NumTasks)
+}
+
+// metadataDisplay formats a raw job metadata value for the info panel. A JSON
+// object becomes "key: value   key: value" (sorted by key); anything else is
+// returned as-is.
+func metadataDisplay(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "(none)"
+	}
+	var mp map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &mp); err != nil || len(mp) == 0 {
+		return raw
+	}
+	keys := make([]string, 0, len(mp))
+	for k := range mp {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s: %v", k, mp[k]))
+	}
+	return strings.Join(parts, "   ")
+}
+
+// truncRunes truncates s to at most n runes, adding an ellipsis when cut.
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if n < 0 {
+		n = 0
+	}
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // distinctOwners returns the unique, non-empty owner names across the jobs, in
