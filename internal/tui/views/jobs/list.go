@@ -292,6 +292,15 @@ func (m ListModel) SelectedJID() int {
 	return jid
 }
 
+// SelectedTitle returns the title of the currently highlighted row, or "".
+func (m ListModel) SelectedTitle() string {
+	row := m.table.SelectedRow()
+	if len(row) == 0 {
+		return ""
+	}
+	return row[colTitle]
+}
+
 // --- private helpers ---
 
 func (m ListModel) doFetch() tea.Cmd {

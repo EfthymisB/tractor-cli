@@ -33,6 +33,7 @@ type Model struct {
 	activeView View
 
 	jobsList jobs.ListModel
+	detail   jobs.DetailModel
 
 	client *api.Client
 	cfg    *config.Config
@@ -53,6 +54,7 @@ func New(client *api.Client, cfg *config.Config) Model {
 	return Model{
 		activeView: ViewJobsList,
 		jobsList:   jobs.New(client, cfg),
+		detail:     jobs.NewDetail(client, cfg),
 		client:     client,
 		cfg:        cfg,
 		spinner:    sp,
@@ -74,8 +76,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Give the active child everything except the bottom status bar line.
+		// Give each child everything except the bottom status bar line.
 		m.jobsList = m.jobsList.SetSize(m.width, m.height-1)
+		m.detail = m.detail.SetSize(m.width, m.height-1)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -95,20 +98,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			// Don't quit while the filter form is capturing keystrokes — "q"
 			// may be part of a username or title being typed.
-			if !m.jobsList.CapturingInput() {
-				return m, tea.Quit
+			if m.activeView == ViewJobsList && m.jobsList.CapturingInput() {
+				break
 			}
+			return m, tea.Quit
 		case "?":
 			// Open help, unless the filter form wants the literal "?".
-			if !m.jobsList.CapturingInput() {
+			if !(m.activeView == ViewJobsList && m.jobsList.CapturingInput()) {
 				m.showHelp = true
+				return m, nil
+			}
+		case "enter":
+			// On the jobs list, open the selected job's task detail view.
+			if m.activeView == ViewJobsList && !m.jobsList.CapturingInput() {
+				if jid := m.jobsList.SelectedJID(); jid > 0 {
+					m.activeView = ViewJobDetail
+					var cmd tea.Cmd
+					m.detail, cmd = m.detail.Load(jid, m.jobsList.SelectedTitle())
+					return m, cmd
+				}
+			}
+		case "esc":
+			// Return from the detail view to the jobs list.
+			if m.activeView == ViewJobDetail {
+				m.activeView = ViewJobsList
 				return m, nil
 			}
 		}
 
 	case tickMsg:
+		// Auto-refresh whichever view is in front.
 		var refreshCmd tea.Cmd
-		m.jobsList, refreshCmd = m.jobsList.Refresh()
+		if m.activeView == ViewJobDetail {
+			m.detail, refreshCmd = m.detail.Refresh()
+		} else {
+			m.jobsList, refreshCmd = m.jobsList.Refresh()
+		}
 		cmds = append(cmds, refreshCmd)
 		if m.cfg.UI.RefreshInterval > 0 {
 			cmds = append(cmds, scheduleTick(time.Duration(m.cfg.UI.RefreshInterval)*time.Second))
@@ -118,10 +143,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Delegate everything else to the active child model.
 	var childCmd tea.Cmd
-	m.jobsList, childCmd = m.jobsList.Update(msg)
+	switch m.activeView {
+	case ViewJobDetail:
+		m.detail, childCmd = m.detail.Update(msg)
+	default:
+		m.jobsList, childCmd = m.jobsList.Update(msg)
+	}
 	cmds = append(cmds, childCmd)
 
-	// Keep spinner animated.
+	// Keep the status-bar spinner animated.
 	var spinCmd tea.Cmd
 	m.spinner, spinCmd = m.spinner.Update(msg)
 	cmds = append(cmds, spinCmd)
@@ -138,7 +168,9 @@ func (m Model) View() string {
 	}
 	var body string
 	switch m.activeView {
-	case ViewJobsList:
+	case ViewJobDetail:
+		body = m.detail.View()
+	default:
 		body = m.jobsList.View()
 	}
 	return body + "\n" + m.statusBar()
@@ -164,6 +196,8 @@ func (m Model) renderHelp() string {
 		row("↑/↓  j/k", "Move selection"),
 		row("PgUp/PgDn", "Page up / down"),
 		row("g / G", "Jump to top / bottom"),
+		row("Enter", "Open selected job's tasks"),
+		row("Esc", "Back to job list"),
 	) + "\n\n")
 	b.WriteString(section("Filtering & view",
 		row("/", "Open filter form"),
@@ -200,20 +234,37 @@ func (m Model) statusBar() string {
 	user := m.cfg.Auth.Username
 	host := m.cfg.Engine.Host
 
-	left := fmt.Sprintf(" tractor-cli  │  %s@%s  │  Jobs: %d",
-		user, host, m.jobsList.JobCount())
-
-	if m.jobsList.IsLoading() {
-		left += "  │  " + m.spinner.View() + " loading…"
-	} else if t := m.jobsList.LastRefresh(); !t.IsZero() {
-		left += "  │  Refreshed " + t.Format("15:04:05")
+	var left string
+	var loading bool
+	var err error
+	if m.activeView == ViewJobDetail {
+		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Job %d  │  Tasks: %d",
+			user, host, m.detail.JID(), m.detail.TaskCount())
+		loading = m.detail.IsLoading()
+		err = m.detail.Err()
+	} else {
+		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Jobs: %d",
+			user, host, m.jobsList.JobCount())
+		loading = m.jobsList.IsLoading()
+		err = m.jobsList.Err()
 	}
 
-	if err := m.jobsList.Err(); err != nil {
+	if loading {
+		left += "  │  " + m.spinner.View() + " loading…"
+	} else if m.activeView == ViewJobsList {
+		if t := m.jobsList.LastRefresh(); !t.IsZero() {
+			left += "  │  Refreshed " + t.Format("15:04:05")
+		}
+	}
+
+	if err != nil {
 		left = " " + styles.ErrorStyle.Render("✗ "+err.Error())
 	}
 
 	right := " [?] help  [q] quit "
+	if m.activeView == ViewJobDetail {
+		right = " [Esc] back  [?] help  [q] quit "
+	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
