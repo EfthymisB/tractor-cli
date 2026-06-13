@@ -412,7 +412,7 @@ func (m ListModel) colorizeLine(line string, job models.Job) string {
 
 	barStart := -1
 	for k, r := range runes {
-		if r == '█' || r == '░' {
+		if r == '▬' || r == '▭' {
 			barStart = k
 			break
 		}
@@ -723,7 +723,7 @@ func progressSegments(j models.Job, width int) (done, errs, act, rem int) {
 // live in the cell value itself).
 func progressBarPlain(j models.Job, width int) string {
 	d, e, a, r := progressSegments(j, width)
-	return strings.Repeat("█", d+e+a) + strings.Repeat("░", r)
+	return strings.Repeat("▬", d+e+a) + strings.Repeat("▭", r)
 }
 
 // progressBarColored renders the multi-colour bar: done=grey, error=red,
@@ -736,7 +736,7 @@ func progressBarColored(j models.Job, width int) string {
 			return
 		}
 		b.WriteString("\x1b[38;5;" + color + "m")
-		b.WriteString(strings.Repeat("█", n))
+		b.WriteString(strings.Repeat("▬", n))
 		b.WriteString("\x1b[0m")
 	}
 	seg(d, "240") // done: grey
