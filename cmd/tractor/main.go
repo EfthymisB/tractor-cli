@@ -64,6 +64,7 @@ func runTUI() error {
 	p := tea.NewProgram(
 		tui.New(client, cfg),
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 	_, err = p.Run()
 	return err

@@ -160,6 +160,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case action.CancelMsg:
 		return m, nil
 
+	case tea.MouseMsg:
+		// Wheel scrolling: the trace/log viewports handle the mouse natively;
+		// for tables we translate a wheel tick into an up/down key.
+		up := msg.Button == tea.MouseButtonWheelUp
+		down := msg.Button == tea.MouseButtonWheelDown
+		if !up && !down {
+			return m, nil
+		}
+		if m.showTrace {
+			var cmd tea.Cmd
+			m.traceVP, cmd = m.traceVP.Update(msg)
+			return m, cmd
+		}
+		if m.activeView == ViewTaskLog {
+			var cmd tea.Cmd
+			m.logView, cmd = m.logView.Update(msg)
+			return m, cmd
+		}
+		return m.scrollActive(up)
+
 	case farmStatsMsg:
 		m.jobsList = m.jobsList.SetFarmStats(
 			msg.slotsInUse, msg.slotsTotal, msg.bladesUp, msg.bladesTotal)
@@ -617,6 +637,7 @@ func (m Model) renderHelp() string {
 		row("g / G", "Jump to top / bottom"),
 		row("Enter", "Open job tasks, then a task's log"),
 		row("Esc", "Back one level"),
+		row("Mouse wheel", "Scroll (Shift to select text)"),
 	) + "\n\n")
 	b.WriteString(section("Filtering & view",
 		row("/", "Open filter form"),
@@ -993,6 +1014,26 @@ func parenTitle(s string) string {
 		return ""
 	}
 	return "(" + s + ")"
+}
+
+// scrollActive moves the active table view's cursor by one row (mouse wheel).
+func (m Model) scrollActive(up bool) (tea.Model, tea.Cmd) {
+	k := tea.KeyMsg{Type: tea.KeyDown}
+	if up {
+		k.Type = tea.KeyUp
+	}
+	var cmd tea.Cmd
+	switch m.activeView {
+	case ViewJobDetail:
+		m.detail, cmd = m.detail.Update(k)
+	case ViewBladesList:
+		m.blades, cmd = m.blades.Update(k)
+	case ViewBladeDetail:
+		m.bladeDetail, cmd = m.bladeDetail.Update(k)
+	default:
+		m.jobsList, cmd = m.jobsList.Update(k)
+	}
+	return m, cmd
 }
 
 // bellCmd rings the terminal bell (used for watched-job notifications).
