@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tractor-cli/tractor-cli/internal/models"
@@ -92,75 +93,112 @@ func (c *Client) QueryBlades() ([]models.Blade, error) {
 	return blades, nil
 }
 
-// BladeDetails returns the commands currently running on a blade. There is no
-// monitor query for this, so we invoke the engine's SQL helper function
-// TractorJSONBladeInfo via the /Tractor/db endpoint (the same path `tq` uses).
-func (c *Client) BladeDetails(name string) ([]models.BladeCommand, error) {
-	safe := strings.ReplaceAll(name, "'", "''")
-	p := c.authenticatedParams()
-	p.Set("q", fmt.Sprintf("TractorJSONBladeInfo('%s')", safe))
+// tractorSelect runs a single-table tractorselect() over the /Tractor/db proxy
+// (the supported query path used by tractor.api.query) and returns the rows
+// array as raw JSON for the caller to unmarshal into a typed slice.
+func (c *Client) tractorSelect(table, where, columns, orderby string) (json.RawMessage, error) {
+	// The where clause is embedded inside a single-quoted SQL literal, so its
+	// own single quotes must be doubled.
+	q := fmt.Sprintf("tractorselect('%s', '%s', '%s', '%s', %d, 'f', 'None')",
+		table, strings.ReplaceAll(where, "'", "''"), columns, orderby, 100000)
 
+	p := c.authenticatedParams()
+	p.Set("q", q)
 	b, err := c.get("/Tractor/db", p)
 	if err != nil {
-		return nil, fmt.Errorf("BladeDetails: %w", err)
+		return nil, err
 	}
-
-	// db endpoint envelope: {"rc":N, "msg":..., "rows":[{"<fn>": "<json text>"}]}
 	var resp struct {
-		RC   int                          `json:"rc"`
-		Msg  string                       `json:"msg"`
-		Rows []map[string]json.RawMessage `json:"rows"`
+		RC   int             `json:"rc"`
+		Msg  string          `json:"msg"`
+		Rows json.RawMessage `json:"rows"`
 	}
 	if err := json.Unmarshal(b, &resp); err != nil {
-		return nil, fmt.Errorf("BladeDetails: parsing response: %w", err)
+		return nil, err
 	}
 	if resp.RC != 0 {
-		return nil, fmt.Errorf("BladeDetails: engine error (rc=%d): %s", resp.RC, resp.Msg)
+		return nil, fmt.Errorf("rc=%d: %s", resp.RC, resp.Msg)
 	}
-	if len(resp.Rows) == 0 {
+	return resp.Rows, nil
+}
+
+// BladeDetails returns the commands currently running on a blade. There is no
+// monitor query for this, so we assemble it from tractorselect over the
+// invocation (active invocations on the blade), job (owner) and command (argv)
+// tables, joined client-side.
+func (c *Client) BladeDetails(bladeID string) ([]models.BladeCommand, error) {
+	where := fmt.Sprintf("bladeid='%s' and not stoptime", bladeID)
+	invRaw, err := c.tractorSelect("invocation", where, "jid,tid,cid,numslots", "jid,tid")
+	if err != nil {
+		return nil, fmt.Errorf("BladeDetails invocations: %w", err)
+	}
+	var invs []struct {
+		JID      int `json:"jid"`
+		TID      int `json:"tid"`
+		CID      int `json:"cid"`
+		NumSlots int `json:"numslots"`
+	}
+	if err := json.Unmarshal(invRaw, &invs); err != nil {
+		return nil, fmt.Errorf("BladeDetails: parsing invocations: %w", err)
+	}
+	if len(invs) == 0 {
 		return nil, nil
 	}
 
-	// The single cell holds the JSON document (usually as a JSON-encoded string).
-	var cell json.RawMessage
-	for _, v := range resp.Rows[0] {
-		cell = v
-		break
+	// Unique jids for the follow-up owner/command lookups.
+	seen := make(map[int]struct{})
+	var jids []string
+	for _, iv := range invs {
+		if _, ok := seen[iv.JID]; !ok {
+			seen[iv.JID] = struct{}{}
+			jids = append(jids, strconv.Itoa(iv.JID))
+		}
 	}
-	doc := []byte(cell)
-	var s string
-	if json.Unmarshal(cell, &s) == nil {
-		doc = []byte(s) // cell was a JSON string; its contents are the document
+	jidIn := "jid in [" + strings.Join(jids, ",") + "]"
+
+	// Owner per job.
+	ownerByJID := map[int]string{}
+	if raw, err := c.tractorSelect("job", jidIn, "jid,owner", "jid"); err == nil {
+		var jobs []struct {
+			JID   int    `json:"jid"`
+			Owner string `json:"owner"`
+		}
+		if json.Unmarshal(raw, &jobs) == nil {
+			for _, j := range jobs {
+				ownerByJID[j.JID] = j.Owner
+			}
+		}
 	}
 
-	var info struct {
-		Cmds []struct {
-			JID      int      `json:"jid"`
-			TID      int      `json:"tid"`
-			CID      int      `json:"cid"`
-			Owner    string   `json:"juser"`
-			Argv     []string `json:"argv"`
-			Start    float64  `json:"t"`
-			NumSlots int      `json:"numslots"`
-		} `json:"cmds"`
-	}
-	if err := json.Unmarshal(doc, &info); err != nil {
-		return nil, fmt.Errorf("BladeDetails: parsing blade info: %w", err)
+	// argv per (jid,tid,cid).
+	type key struct{ jid, tid, cid int }
+	argvByKey := map[key]string{}
+	if raw, err := c.tractorSelect("command", jidIn, "jid,tid,cid,argv", "jid,tid,cid"); err == nil {
+		var cmds []struct {
+			JID  int      `json:"jid"`
+			TID  int      `json:"tid"`
+			CID  int      `json:"cid"`
+			Argv []string `json:"argv"`
+		}
+		if json.Unmarshal(raw, &cmds) == nil {
+			for _, cm := range cmds {
+				argvByKey[key{cm.JID, cm.TID, cm.CID}] = strings.Join(cm.Argv, " ")
+			}
+		}
 	}
 
-	cmds := make([]models.BladeCommand, 0, len(info.Cmds))
-	for _, r := range info.Cmds {
-		cmds = append(cmds, models.BladeCommand{
-			JID:       r.JID,
-			TID:       r.TID,
-			CID:       r.CID,
-			Owner:     r.Owner,
-			Command:   strings.Join(r.Argv, " "),
-			StartTime: r.Start,
-			NumSlots:  r.NumSlots,
+	out := make([]models.BladeCommand, 0, len(invs))
+	for _, iv := range invs {
+		out = append(out, models.BladeCommand{
+			JID:      iv.JID,
+			TID:      iv.TID,
+			CID:      iv.CID,
+			Owner:    ownerByJID[iv.JID],
+			Command:  argvByKey[key{iv.JID, iv.TID, iv.CID}],
+			NumSlots: iv.NumSlots,
 		})
 	}
-	return cmds, nil
+	return out, nil
 }
 
 // bladeID builds the "name/ipaddr" identifier the engine expects.

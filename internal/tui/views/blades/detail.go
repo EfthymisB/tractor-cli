@@ -29,12 +29,11 @@ const (
 	dcolTID     = 1
 	dcolOwner   = 2
 	dcolSlots   = 3
-	dcolStarted = 4
-	dcolCommand = 5
-	dNumCols    = 6
+	dcolCommand = 4
+	dNumCols    = 5
 )
 
-var detailColumnNames = [dNumCols]string{"JID", "TID", "OWNER", "SLOTS", "STARTED", "COMMAND"}
+var detailColumnNames = [dNumCols]string{"JID", "TID", "OWNER", "SLOTS", "COMMAND"}
 
 // DetailModel lists the commands currently running on a single blade.
 type DetailModel struct {
@@ -42,7 +41,8 @@ type DetailModel struct {
 	spinner spinner.Model
 	search  textinput.Model
 
-	blade   string
+	blade   string // display name
+	bladeID string // uuid used for queries
 	allCmds []models.BladeCommand
 	cmds    []models.BladeCommand
 
@@ -91,8 +91,9 @@ func NewDetail(client *api.Client, cfg *config.Config) DetailModel {
 }
 
 // Load points the view at a blade and fetches its running commands.
-func (m DetailModel) Load(blade string) (DetailModel, tea.Cmd) {
+func (m DetailModel) Load(blade, bladeID string) (DetailModel, tea.Cmd) {
 	m.blade = blade
+	m.bladeID = bladeID
 	m.allCmds = nil
 	m.cmds = nil
 	m.err = nil
@@ -108,7 +109,7 @@ func (m DetailModel) Load(blade string) (DetailModel, tea.Cmd) {
 
 // Refresh re-fetches the current blade's commands.
 func (m DetailModel) Refresh() (DetailModel, tea.Cmd) {
-	if m.blade == "" {
+	if m.bladeID == "" {
 		return m, nil
 	}
 	m.loading = true
@@ -116,9 +117,9 @@ func (m DetailModel) Refresh() (DetailModel, tea.Cmd) {
 }
 
 func (m DetailModel) fetch() tea.Cmd {
-	blade := m.blade
+	blade, bladeID := m.blade, m.bladeID
 	return func() tea.Msg {
-		cmds, err := m.client.BladeDetails(blade)
+		cmds, err := m.client.BladeDetails(bladeID)
 		if err != nil {
 			return cmdsErrMsg{err}
 		}
@@ -180,7 +181,7 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			return m, m.search.Focus()
 		case "R":
 			return m.Refresh()
-		case "1", "2", "3", "4", "5", "6":
+		case "1", "2", "3", "4", "5":
 			col := int(msg.String()[0] - '1')
 			if col >= 0 && col < dNumCols {
 				if m.sortCol == col {
@@ -262,8 +263,6 @@ func (m DetailModel) filterSort() []models.BladeCommand {
 			less = strings.ToLower(a.Owner) < strings.ToLower(b.Owner)
 		case dcolSlots:
 			less = a.NumSlots < b.NumSlots
-		case dcolStarted:
-			less = a.StartTime < b.StartTime
 		case dcolCommand:
 			less = strings.ToLower(a.Command) < strings.ToLower(b.Command)
 		default:
@@ -285,7 +284,6 @@ func (m DetailModel) buildRows() []table.Row {
 			strconv.Itoa(c.TID),
 			c.Owner,
 			strconv.Itoa(c.NumSlots),
-			formatEpoch(c.StartTime, m.cfg.UI.DateFormat),
 			c.Command,
 		})
 	}
@@ -306,7 +304,6 @@ func (m DetailModel) makeColumns() []table.Column {
 			strconv.Itoa(c.TID),
 			c.Owner,
 			strconv.Itoa(c.NumSlots),
-			formatEpoch(c.StartTime, m.cfg.UI.DateFormat),
 			"", // COMMAND fills remaining width
 		}
 		for col, cell := range cells {
@@ -357,7 +354,7 @@ func (m DetailModel) renderHeader() string {
 		title += fmt.Sprintf("  (%d cmds)", len(m.cmds))
 	}
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-		Render("   [Esc] back  [/] search  [1-6] sort  [R] refresh")
+		Render("   [Esc] back  [/] search  [1-5] sort  [R] refresh")
 	return styles.Title.Render(title) + hint
 }
 

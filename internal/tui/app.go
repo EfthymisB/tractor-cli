@@ -193,7 +193,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if bl, ok := m.blades.SelectedBlade(); ok {
 					m.activeView = ViewBladeDetail
 					var cmd tea.Cmd
-					m.bladeDetail, cmd = m.bladeDetail.Load(bl.Name)
+					m.bladeDetail, cmd = m.bladeDetail.Load(bl.Name, bl.BladeID)
 					return m, cmd
 				}
 			}
