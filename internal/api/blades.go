@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tractor-cli/tractor-cli/internal/models"
 )
@@ -239,12 +242,22 @@ func (c *Client) EjectBlade(name, addr string) error {
 }
 
 // TraceBlade returns the engine's plain-text trace/diagnostics for a blade.
+// It uses a short timeout because the engine relays to the blade, which can be
+// slow or unresponsive — we'd rather fail fast than appear stuck.
 func (c *Client) TraceBlade(name, addr string) (string, error) {
 	p := c.authenticatedParams()
 	p.Set("q", "tracer")
 	p.Set("t", bladeID(name, addr))
 	p.Set("fmt", "plain")
-	b, err := c.get("/Tractor/ctrl", p)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/Tractor/ctrl?"+p.Encode(), nil)
+	if err != nil {
+		return "", fmt.Errorf("TraceBlade: %w", err)
+	}
+	b, err := c.do(req)
 	if err != nil {
 		return "", fmt.Errorf("TraceBlade: %w", err)
 	}
