@@ -75,6 +75,16 @@ func (c *Client) SetJobPriority(jid int, priority float64) error {
 		"set_priority": strconv.FormatFloat(priority, 'g', -1, 64),
 	})
 }
+func (c *Client) LockJob(jid int, note string) error {
+	extra := map[string]string{"set_lock": "1"}
+	if note != "" {
+		extra["note"] = note
+	}
+	return c.jobOp("jattr", jid, extra)
+}
+func (c *Client) UnlockJob(jid int) error {
+	return c.jobOp("jattr", jid, map[string]string{"set_lock": "0"})
+}
 
 // --- task actions ---
 

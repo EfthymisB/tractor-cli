@@ -53,6 +53,14 @@ type Model struct {
 	actionMsg string // last action result, shown in the status bar
 	actionErr bool
 
+	// notes overlay
+	showNotes    bool
+	notesJID     int
+	notesTitle   string
+	notesText    string
+	notesLoading bool
+	notesErr     error
+
 	width, height int
 }
 
@@ -105,6 +113,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case action.CancelMsg:
 		return m, nil
 
+	case notesLoadedMsg:
+		if msg.jid == m.notesJID {
+			m.notesText = msg.text
+			m.notesLoading = false
+		}
+		return m, nil
+
+	case notesErrMsg:
+		if msg.jid == m.notesJID {
+			m.notesErr = msg.err
+			m.notesLoading = false
+		}
+		return m, nil
+
 	case actionDoneMsg:
 		m.actionErr = msg.err != nil
 		if msg.err != nil {
@@ -135,6 +157,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m.showHelp = false
+			return m, nil
+		}
+
+		// The notes overlay is dismissed by any key.
+		if m.showNotes {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.showNotes = false
 			return m, nil
 		}
 
@@ -233,6 +264,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+		case "n":
+			// Show the selected job's notes overlay.
+			if !capturing {
+				jid, title := 0, ""
+				switch m.activeView {
+				case ViewJobsList:
+					if job, ok := m.jobsList.SelectedJob(); ok {
+						jid, title = job.JID, fmt.Sprintf("Job %d — %s", job.JID, job.Title)
+					}
+				case ViewJobDetail:
+					jid = m.detail.JID()
+					title = fmt.Sprintf("Job %d %s", jid, parenTitle(m.detail.JobTitle()))
+				}
+				if jid > 0 {
+					m.showNotes = true
+					m.notesJID = jid
+					m.notesTitle = title
+					m.notesText = ""
+					m.notesErr = nil
+					m.notesLoading = true
+					return m, m.fetchNotes(jid)
+				}
+			}
 		case "b":
 			// Toggle into the blades view from the jobs list.
 			if !capturing && m.activeView == ViewJobsList {
@@ -253,7 +307,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					if job, ok := m.jobsList.SelectedJob(); ok {
 						label := fmt.Sprintf("Job %d — %s", job.JID, job.Title)
-						m.actionMenu = m.actionMenu.OpenJob(job.JID, label, job.Status == "paused")
+						m.actionMenu = m.actionMenu.OpenJob(job.JID, label, job.Status == "paused", job.Locked)
 						return m, nil
 					}
 				case ViewJobDetail:
@@ -376,6 +430,9 @@ func (m Model) View() string {
 	if m.showHelp {
 		return m.renderHelp() + "\n" + m.statusBar()
 	}
+	if m.showNotes {
+		return m.renderNotes() + "\n" + m.statusBar()
+	}
 	if m.actionMenu.Active() {
 		return m.actionMenu.View(m.width, m.height-1) + "\n" + m.statusBar()
 	}
@@ -425,6 +482,7 @@ func (m Model) renderHelp() string {
 		row("e", "Toggle errors only"),
 		row("Space / A", "Select row / all (for bulk)"),
 		row("a", "Actions (selection if any, else row)"),
+		row("n", "View notes (FLG column: L=lock N=note)"),
 		row("b", "Blades view"),
 		row("R", "Refresh now"),
 	) + "\n\n")
@@ -548,6 +606,79 @@ func (m Model) statusBar() string {
 	)
 }
 
+// notes overlay messages
+type notesLoadedMsg struct {
+	jid  int
+	text string
+}
+type notesErrMsg struct {
+	jid int
+	err error
+}
+
+// fetchNotes loads and formats a job's notes for the overlay.
+func (m Model) fetchNotes(jid int) tea.Cmd {
+	client := m.client
+	format := m.cfg.UI.DateFormat
+	return func() tea.Msg {
+		notes, err := client.JobNotes(jid)
+		if err != nil {
+			return notesErrMsg{jid: jid, err: err}
+		}
+		if len(notes) == 0 {
+			return notesLoadedMsg{jid: jid, text: "(no notes)"}
+		}
+		var b strings.Builder
+		for i, n := range notes {
+			ts := ""
+			if n.Time > 0 {
+				ts = time.Unix(int64(n.Time), 0).Format(format)
+			}
+			head := strings.TrimSpace(n.User)
+			if n.Type != "" {
+				head += " (" + n.Type + ")"
+			}
+			b.WriteString(strings.TrimSpace(ts+"  "+head) + "\n")
+			b.WriteString(strings.TrimSpace(n.Text) + "\n")
+			if i < len(notes)-1 {
+				b.WriteString("\n")
+			}
+		}
+		return notesLoadedMsg{jid: jid, text: b.String()}
+	}
+}
+
+// renderNotes draws the notes overlay, centred in the body area.
+func (m Model) renderNotes() string {
+	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).
+		Render("Notes — " + m.notesTitle)
+	var body string
+	switch {
+	case m.notesLoading:
+		body = "Loading… " + m.spinner.View()
+	case m.notesErr != nil:
+		body = styles.ErrorStyle.Render("Error: " + m.notesErr.Error())
+	default:
+		body = m.notesText
+	}
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("press any key to close")
+
+	width := m.width - 8
+	if width > 90 {
+		width = 90
+	}
+	if width < 20 {
+		width = 20
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("86")).
+		Padding(1, 3).
+		Width(width).
+		Render(header + "\n\n" + body + "\n\n" + hint)
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, box)
+}
+
 // actionDoneMsg reports the outcome of an action invoked from the menu.
 type actionDoneMsg struct {
 	op    string
@@ -642,6 +773,10 @@ func jobOpCall(client *api.Client, op string, jid int, val string) error {
 			return fmt.Errorf("invalid priority %q", val)
 		}
 		return client.SetJobPriority(jid, p)
+	case "lock":
+		return client.LockJob(jid, val)
+	case "unlock":
+		return client.UnlockJob(jid)
 	default:
 		return fmt.Errorf("unknown job action %q", op)
 	}

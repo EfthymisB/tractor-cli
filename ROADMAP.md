@@ -113,8 +113,12 @@ value-input step and a confirmation step for destructive actions.
 - [x] Multi-select / bulk actions: Space toggles a row, A selects all, Esc
       clears; `a` then applies the chosen op across the whole selection and
       reports an aggregate result.
-- [ ] Permission/ownership awareness (currently relies on the engine to reject;
-      we surface its error).
+- [x] Lock / unlock jobs (lock takes an optional note).
+- [x] Job notes: FLG column (L=locked, N=has notes), lock/notes summary in the
+      info panel, and an `n` overlay to read the full notes.
+- [ ] Delay / undelay (parked — not currently needed).
+- [ ] Permission/ownership awareness — left to the engine to reject; we surface
+      its error (intentional, per decision).
 
 ## Phase 5 — Blades view ✅
 

@@ -22,7 +22,41 @@ type jtreeNode struct {
 }
 
 type jtreeJob struct {
-	Children []jtreeNode `json:"children"`
+	Children []jtreeNode       `json:"children"`
+	Notes    []models.JobNote  `json:"notes"`
+}
+
+// JobNotes returns the notes attached to a job (q=jtree with notes requested,
+// graph omitted to keep it light).
+func (c *Client) JobNotes(jid int) ([]models.JobNote, error) {
+	params := c.authenticatedParams()
+	params.Set("q", "jtree")
+	params.Set("jid", strconv.Itoa(jid))
+	params.Set("notes", "1")
+	params.Set("getnotes", "1")
+	params.Set("graph", "0")
+
+	b, err := c.get("/Tractor/monitor", params)
+	if err != nil {
+		return nil, fmt.Errorf("JobNotes: %w", err)
+	}
+	var resp struct {
+		RC    int                            `json:"rc"`
+		Msg   string                         `json:"msg"`
+		Users map[string]map[string]jtreeJob `json:"users"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return nil, fmt.Errorf("JobNotes: parsing response: %w", err)
+	}
+	if resp.RC != 0 {
+		return nil, fmt.Errorf("JobNotes: engine error (rc=%d): %s", resp.RC, resp.Msg)
+	}
+	for _, jobs := range resp.Users {
+		for _, job := range jobs {
+			return job.Notes, nil
+		}
+	}
+	return nil, nil
 }
 
 // jtreeTaskData mirrors the per-task "data" object produced by tasktreeForRows.

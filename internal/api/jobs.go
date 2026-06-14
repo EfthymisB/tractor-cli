@@ -48,6 +48,9 @@ type rawJobData struct {
 	Paused    int         `json:"paused"`
 	Projects  interface{} `json:"projects"` // JSON array or null
 	Metadata  string      `json:"metadata"` // arbitrary text, may be JSON
+	LastNote  int         `json:"lastnoteid"`
+	LockOwner string      `json:"lockowner"`
+	LockNote  string      `json:"locknote"`
 	// [total, active, done, error]
 	NTasks []int `json:"nTasks"`
 }
@@ -74,6 +77,10 @@ func (r rawJobData) toJob() models.Job {
 		NumDone:   numDone,
 		NumError:  numError,
 		NumActive: numActive,
+		HasNote:   r.LastNote != 0,
+		Locked:    r.LockOwner != "",
+		LockOwner: r.LockOwner,
+		LockNote:  r.LockNote,
 	}
 }
 

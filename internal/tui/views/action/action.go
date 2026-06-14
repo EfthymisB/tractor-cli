@@ -28,10 +28,11 @@ type Target struct {
 
 // Item is one selectable action.
 type Item struct {
-	Label       string
-	Op          string
-	Destructive bool
-	InputPrompt string // non-empty → prompt for a value first
+	Label         string
+	Op            string
+	Destructive   bool
+	InputPrompt   string // non-empty → prompt for a value first
+	OptionalInput bool   // input may be left blank
 }
 
 // ChosenMsg is emitted when an action is confirmed.
@@ -75,9 +76,9 @@ func New() Model {
 func (m Model) Active() bool { return m.active }
 
 // OpenJob opens the menu with job-level actions.
-func (m Model) OpenJob(jid int, label string, paused bool) Model {
+func (m Model) OpenJob(jid int, label string, paused, locked bool) Model {
 	m.target = Target{Kind: "job", JID: jid, Label: label, Paused: paused}
-	m.items = jobItems(paused)
+	m.items = jobItems(paused, locked)
 	return m.reset()
 }
 
@@ -119,10 +120,14 @@ func (m Model) reset() Model {
 	return m
 }
 
-func jobItems(paused bool) []Item {
+func jobItems(paused, locked bool) []Item {
 	pause := Item{Label: "Pause", Op: "pause"}
 	if paused {
 		pause = Item{Label: "Unpause", Op: "unpause"}
+	}
+	lock := Item{Label: "Lock…", Op: "lock", InputPrompt: "Lock note", OptionalInput: true}
+	if locked {
+		lock = Item{Label: "Unlock", Op: "unlock"}
 	}
 	return []Item{
 		pause,
@@ -130,6 +135,7 @@ func jobItems(paused bool) []Item {
 		{Label: "Retry active tasks", Op: "retry-active"},
 		{Label: "Skip errored tasks", Op: "skip-errors"},
 		{Label: "Set priority…", Op: "chpri", InputPrompt: "New priority"},
+		lock,
 		{Label: "Interrupt (kill active)", Op: "interrupt", Destructive: true},
 		{Label: "Restart job", Op: "restart", Destructive: true},
 		{Label: "Delete job", Op: "delete", Destructive: true},
@@ -146,6 +152,8 @@ func bulkJobItems() []Item {
 		{Label: "Retry active tasks", Op: "retry-active"},
 		{Label: "Skip errored tasks", Op: "skip-errors"},
 		{Label: "Set priority…", Op: "chpri", InputPrompt: "New priority"},
+		{Label: "Lock…", Op: "lock", InputPrompt: "Lock note", OptionalInput: true},
+		{Label: "Unlock", Op: "unlock"},
 		{Label: "Interrupt (kill active)", Op: "interrupt", Destructive: true},
 		{Label: "Restart jobs", Op: "restart", Destructive: true},
 		{Label: "Delete jobs", Op: "delete", Destructive: true},
@@ -238,7 +246,7 @@ func (m Model) updateInput(key tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		val := strings.TrimSpace(m.input.Value())
-		if val == "" {
+		if val == "" && !m.items[m.cursor].OptionalInput {
 			return m, nil // require a value
 		}
 		m.input.Blur()

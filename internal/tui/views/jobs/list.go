@@ -42,13 +42,14 @@ const (
 	colSpooled   = 10
 	colProjects  = 11
 	colSpoolHost = 12
-	numCols      = 13
+	colFlags     = 13
+	numCols      = 14
 
 	// progressBarWidth is the fixed glyph width of the PROGRESS bar cell.
 	progressBarWidth = 12
 
-	// jobsPanelHeight is the height (incl. border) of the bottom metadata panel.
-	jobsPanelHeight = 3
+	// jobsPanelHeight is the height (incl. border) of the bottom info panel.
+	jobsPanelHeight = 4
 )
 
 // ListModel is the jobs list view model.
@@ -298,21 +299,47 @@ func (m ListModel) View() string {
 	return header + "\n" + tableView + "\n" + panel
 }
 
-// renderPanel draws the bottom info panel showing the highlighted job's
-// metadata. Its height is fixed at jobsPanelHeight.
+// renderPanel draws the bottom info panel for the highlighted job: a lock/notes
+// line and a metadata line. Its height is fixed at jobsPanelHeight.
 func (m ListModel) renderPanel() string {
-	content := "Metadata:  "
+	var status, meta string
 	if job, ok := m.selectedJob(); ok {
-		content += metadataDisplay(job.Metadata)
+		status = jobFlagLine(job)
+		meta = "Metadata:  " + metadataDisplay(job.Metadata)
 	} else {
-		content += "—"
+		status, meta = "—", "Metadata:  —"
 	}
-	content = truncRunes(content, m.width-2)
+	lines := []string{
+		truncRunes(status, m.width-2),
+		truncRunes(meta, m.width-2),
+	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("240")).
 		Width(m.width - 2).
-		Render(content)
+		Render(strings.Join(lines, "\n"))
+}
+
+// jobFlagLine summarises a job's lock and note state for the info panel.
+func jobFlagLine(j models.Job) string {
+	parts := []string{}
+	if j.Locked {
+		s := "🔒 Locked"
+		if j.LockOwner != "" {
+			s += " by " + j.LockOwner
+		}
+		if j.LockNote != "" {
+			s += ": " + j.LockNote
+		}
+		parts = append(parts, s)
+	}
+	if j.HasNote {
+		parts = append(parts, "✎ has notes ([n] to view)")
+	}
+	if len(parts) == 0 {
+		return "No lock or notes"
+	}
+	return strings.Join(parts, "    ")
 }
 
 // selectedJob returns the job under the cursor, mirroring the table row order.
@@ -527,6 +554,7 @@ func (m ListModel) buildRows() []table.Row {
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
 			j.SpoolHost,
+			flagCell(j),
 		})
 	}
 	return rows
@@ -729,13 +757,13 @@ func newTable() table.Model {
 // columnNames are the header labels in column order.
 var columnNames = [numCols]string{
 	"JID", "PROGRESS", "TITLE", "OWNER", "STATUS", "ACT", "ERR", "DONE",
-	"TOTAL", "PRI", "SPOOLED", "PROJECTS", "SPOOLHOST",
+	"TOTAL", "PRI", "SPOOLED", "PROJECTS", "SPOOLHOST", "FLG",
 }
 
 // columnCaps are per-column hard caps on content width (0 = no cap). They keep
 // outlier data (long project lists) from crowding out TITLE.
 var columnCaps = [numCols]int{
-	0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 25, 25,
+	0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 25, 25, 0,
 }
 
 // columnContentWidths returns the content width of every column by scanning the
@@ -766,6 +794,7 @@ func (m ListModel) columnContentWidths() [numCols]int {
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
 			j.SpoolHost,
+			flagCell(j),
 		}
 		for col, cell := range cells {
 			if col == colTitle {
@@ -993,6 +1022,18 @@ func distinctProjects(jobs []models.Job) []string {
 		}
 	}
 	return out
+}
+
+// flagCell renders the FLG column: L for locked, N when the job has notes.
+func flagCell(j models.Job) string {
+	flag := ""
+	if j.Locked {
+		flag += "L"
+	}
+	if j.HasNote {
+		flag += "N"
+	}
+	return flag
 }
 
 // countCell renders a task-count cell, leaving it blank for zero so the ACT

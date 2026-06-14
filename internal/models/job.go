@@ -17,5 +17,18 @@ type Job struct {
 	NumActive int     `json:"numactive"`
 	Projects  string  `json:"projects"`  // joined from []string
 	SpoolHost string  `json:"spoolhost"`
-	Metadata  string  `json:"metadata"`  // formatted for display
+	Metadata  string  `json:"metadata"`  // raw metadata value
+
+	HasNote   bool   `json:"hasnote"`   // job has at least one note
+	Locked    bool   `json:"locked"`    // job is locked
+	LockOwner string `json:"lockowner"` // who locked it
+	LockNote  string `json:"locknote"`  // the lock note
+}
+
+// JobNote is a single note attached to a job.
+type JobNote struct {
+	Type string  `json:"notetype"`
+	User string  `json:"noteuser"`
+	Text string  `json:"notetext"`
+	Time float64 `json:"notetime"` // epoch seconds
 }
