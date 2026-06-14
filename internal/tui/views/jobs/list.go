@@ -375,11 +375,11 @@ func (m ListModel) renderSummary() string {
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	parts := []string{
-		seg("10", "▶", active),
-		seg("11", "■", blocked),
-		seg("9", "✗", errored),
-		seg("240", "✓", done),
-		seg("14", "⏸", paused),
+		seg("10", "active", active),
+		seg("11", "blocked", blocked),
+		seg("9", "error", errored),
+		seg("240", "done", done),
+		seg("14", "paused", paused),
 		dim.Render("│"),
 		dim.Render(fmt.Sprintf("tasks ▶%d ✗%d", activeTasks, errTasks)),
 	}

@@ -287,7 +287,7 @@ func (m Model) clampSel() Model {
 }
 
 func (m Model) heatCols() int {
-	c := m.width / 3 // each cell is "██" + a space
+	c := m.width / 4 // each cell is a 1-char frame + "██" + 1-char frame
 	if c < 1 {
 		c = 1
 	}
@@ -310,8 +310,6 @@ func (m Model) renderHeatmap() string {
 		b.WriteString(heatCell(bl, i == m.selIndex))
 		if (i+1)%cols == 0 {
 			b.WriteByte('\n')
-		} else {
-			b.WriteByte(' ')
 		}
 	}
 
@@ -327,43 +325,35 @@ func (m Model) renderHeatmap() string {
 			bl.Name, bladeStatus(bl), bl.SlotsInUse, bl.NumSlots, pct, bl.LoadAvg, bl.MemGB, nimbyCell(bl))
 	}
 	cell := func(c string) string { return lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render("██") }
-	legend := dim.Render("idle ") + cell("10") + dim.Render("  busy ") + cell("9") +
+	legend := dim.Render("idle ") + cell("253") + dim.Render("  active ") + cell("10") +
 		dim.Render("  nimby ") + cell("11") + dim.Render("  down ") + cell("240")
 
 	return head + "\n\n" + b.String() + "\n\n" + sel + "\n" + legend
 }
 
-// heatCell renders one blade as a coloured block (selected = reversed).
+// heatCell renders one blade as a coloured "██" block in a 4-column unit. The
+// selected blade gets light-blue side frames instead of a solid highlight.
 func heatCell(b models.Blade, selected bool) string {
-	st := lipgloss.NewStyle().Foreground(lipgloss.Color(bladeHeatColor(b)))
+	block := lipgloss.NewStyle().Foreground(lipgloss.Color(bladeHeatColor(b))).Render("██")
 	if selected {
-		st = st.Reverse(true)
+		fr := lipgloss.NewStyle().Foreground(lipgloss.Color("153")) // light blue
+		return fr.Render("▕") + block + fr.Render("▏")
 	}
-	return st.Render("██")
+	return " " + block + " "
 }
 
-// bladeHeatColor maps a blade to a heat colour: grey down, yellow nimby,
-// otherwise green→orange→red by slot utilisation.
+// bladeHeatColor maps a blade to a colour: grey down, yellow nimby, green when
+// it has active work, very light grey when idle.
 func bladeHeatColor(b models.Blade) string {
-	if !bladeUp(b) {
-		return "240"
-	}
-	if isNimbied(b) {
-		return "11"
-	}
-	pct := 0
-	if b.NumSlots > 0 {
-		pct = b.SlotsInUse * 100 / b.NumSlots
-	}
 	switch {
-	case pct < 34:
-		return "10" // green (idle)
-	case pct < 67:
-		return "11" // yellow
-	case pct < 90:
-		return "208" // orange
+	case !bladeUp(b):
+		return "240" // down: grey
+	case isNimbied(b):
+		return "11" // nimby: yellow
+	case b.SlotsInUse > 0:
+		return "10" // active: green
 	default:
-		return "9" // red (full)
+		return "253" // idle: very light grey
 	}
 }
 
