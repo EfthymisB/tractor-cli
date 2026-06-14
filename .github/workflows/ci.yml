@@ -16,6 +16,9 @@ jobs:
           go-version: "1.22"
           cache: true
 
+      - name: Sync modules
+        run: go mod download
+
       - name: gofmt (report only)
         run: |
           unformatted=$(gofmt -l $(git ls-files '*.go'))
