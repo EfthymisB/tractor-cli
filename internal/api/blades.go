@@ -92,23 +92,48 @@ func (c *Client) QueryBlades() ([]models.Blade, error) {
 	return blades, nil
 }
 
-// BladeDetails returns the commands currently running on a blade (q=bladedetails).
+// BladeDetails returns the commands currently running on a blade. There is no
+// monitor query for this, so we invoke the engine's SQL helper function
+// TractorJSONBladeInfo via the /Tractor/db endpoint (the same path `tq` uses).
 func (c *Client) BladeDetails(name string) ([]models.BladeCommand, error) {
+	safe := strings.ReplaceAll(name, "'", "''")
 	p := c.authenticatedParams()
-	p.Set("q", "bladeinfo")
-	// The engine function takes "bladename"; send both common param names so a
-	// minor naming difference doesn't yield an empty result.
-	p.Set("blade", name)
-	p.Set("bladename", name)
+	p.Set("q", fmt.Sprintf("TractorJSONBladeInfo('%s')", safe))
 
-	b, err := c.get("/Tractor/monitor", p)
+	b, err := c.get("/Tractor/db", p)
 	if err != nil {
 		return nil, fmt.Errorf("BladeDetails: %w", err)
 	}
 
+	// db endpoint envelope: {"rc":N, "msg":..., "rows":[{"<fn>": "<json text>"}]}
 	var resp struct {
-		RC   int    `json:"rc"`
-		Msg  string `json:"msg"`
+		RC   int                          `json:"rc"`
+		Msg  string                       `json:"msg"`
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return nil, fmt.Errorf("BladeDetails: parsing response: %w", err)
+	}
+	if resp.RC != 0 {
+		return nil, fmt.Errorf("BladeDetails: engine error (rc=%d): %s", resp.RC, resp.Msg)
+	}
+	if len(resp.Rows) == 0 {
+		return nil, nil
+	}
+
+	// The single cell holds the JSON document (usually as a JSON-encoded string).
+	var cell json.RawMessage
+	for _, v := range resp.Rows[0] {
+		cell = v
+		break
+	}
+	doc := []byte(cell)
+	var s string
+	if json.Unmarshal(cell, &s) == nil {
+		doc = []byte(s) // cell was a JSON string; its contents are the document
+	}
+
+	var info struct {
 		Cmds []struct {
 			JID      int      `json:"jid"`
 			TID      int      `json:"tid"`
@@ -119,15 +144,12 @@ func (c *Client) BladeDetails(name string) ([]models.BladeCommand, error) {
 			NumSlots int      `json:"numslots"`
 		} `json:"cmds"`
 	}
-	if err := json.Unmarshal(b, &resp); err != nil {
-		return nil, fmt.Errorf("BladeDetails: parsing response: %w", err)
-	}
-	if resp.RC != 0 {
-		return nil, fmt.Errorf("BladeDetails: engine error (rc=%d): %s", resp.RC, resp.Msg)
+	if err := json.Unmarshal(doc, &info); err != nil {
+		return nil, fmt.Errorf("BladeDetails: parsing blade info: %w", err)
 	}
 
-	cmds := make([]models.BladeCommand, 0, len(resp.Cmds))
-	for _, r := range resp.Cmds {
+	cmds := make([]models.BladeCommand, 0, len(info.Cmds))
+	for _, r := range info.Cmds {
 		cmds = append(cmds, models.BladeCommand{
 			JID:       r.JID,
 			TID:       r.TID,
