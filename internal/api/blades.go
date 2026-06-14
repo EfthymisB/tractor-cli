@@ -95,8 +95,11 @@ func (c *Client) QueryBlades() ([]models.Blade, error) {
 // BladeDetails returns the commands currently running on a blade (q=bladedetails).
 func (c *Client) BladeDetails(name string) ([]models.BladeCommand, error) {
 	p := c.authenticatedParams()
-	p.Set("q", "bladedetails")
+	p.Set("q", "bladeinfo")
+	// The engine function takes "bladename"; send both common param names so a
+	// minor naming difference doesn't yield an empty result.
 	p.Set("blade", name)
+	p.Set("bladename", name)
 
 	b, err := c.get("/Tractor/monitor", p)
 	if err != nil {
