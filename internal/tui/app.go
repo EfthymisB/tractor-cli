@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/tractor-cli/tractor-cli/internal/api"
 	"github.com/tractor-cli/tractor-cli/internal/config"
+	"github.com/tractor-cli/tractor-cli/internal/state"
 	"github.com/tractor-cli/tractor-cli/internal/tui/styles"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/action"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/blades"
@@ -73,6 +75,14 @@ type Model struct {
 	traceLoading bool
 	traceErr     error
 
+	// persistence + saved filters
+	stateData      state.State
+	showSaveFilter bool
+	saveInput      textinput.Model
+	showLoadFilter bool
+	loadNames      []string
+	loadCursor     int
+
 	width, height int
 }
 
@@ -82,17 +92,28 @@ func New(client *api.Client, cfg *config.Config) Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
 
+	st := state.Load()
+	jl := jobs.New(client, cfg).
+		ApplyLayout(st.TitleWidth, st.SortCol, st.SortAsc, st.RelTime)
+
+	saveIn := textinput.New()
+	saveIn.Prompt = ""
+	saveIn.CharLimit = 40
+	saveIn.Placeholder = "filter name"
+
 	return Model{
-		activeView: ViewJobsList,
-		jobsList:   jobs.New(client, cfg),
-		detail:     jobs.NewDetail(client, cfg),
+		activeView:  ViewJobsList,
+		jobsList:    jl,
+		detail:      jobs.NewDetail(client, cfg),
 		logView:     logview.New(client, cfg),
 		blades:      blades.New(client, cfg),
 		bladeDetail: blades.NewDetail(client, cfg),
 		actionMenu:  action.New(),
-		client:     client,
-		cfg:        cfg,
-		spinner:    sp,
+		stateData:   st,
+		saveInput:   saveIn,
+		client:      client,
+		cfg:         cfg,
+		spinner:     sp,
 	}
 }
 
@@ -281,6 +302,81 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Save-filter overlay (name input).
+		if m.showSaveFilter {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.showSaveFilter = false
+				m.saveInput.Blur()
+				return m, nil
+			case "enter":
+				if name := strings.TrimSpace(m.saveInput.Value()); name != "" {
+					if m.stateData.Filters == nil {
+						m.stateData.Filters = map[string]api.JobFilter{}
+					}
+					m.stateData.Filters[name] = m.jobsList.CurrentFilter()
+					m.saveState()
+					m.actionErr = false
+					m.actionMsg = "saved filter: " + name
+				}
+				m.showSaveFilter = false
+				m.saveInput.Blur()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.saveInput, cmd = m.saveInput.Update(msg)
+			return m, cmd
+		}
+
+		// Load-filter overlay (pick a saved filter).
+		if m.showLoadFilter {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.showLoadFilter = false
+				return m, nil
+			case "up", "k":
+				if m.loadCursor > 0 {
+					m.loadCursor--
+				}
+				return m, nil
+			case "down", "j":
+				if m.loadCursor < len(m.loadNames)-1 {
+					m.loadCursor++
+				}
+				return m, nil
+			case "d":
+				if m.loadCursor < len(m.loadNames) {
+					delete(m.stateData.Filters, m.loadNames[m.loadCursor])
+					m.saveState()
+					m.loadNames = m.stateData.FilterNames()
+					if m.loadCursor >= len(m.loadNames) {
+						m.loadCursor = len(m.loadNames) - 1
+					}
+					if len(m.loadNames) == 0 {
+						m.showLoadFilter = false
+					}
+				}
+				return m, nil
+			case "enter":
+				if m.loadCursor < len(m.loadNames) {
+					name := m.loadNames[m.loadCursor]
+					m.showLoadFilter = false
+					var cmd tea.Cmd
+					m.jobsList, cmd = m.jobsList.ApplyFilter(m.stateData.Filters[name])
+					m.actionErr = false
+					m.actionMsg = "applied filter: " + name
+					return m, cmd
+				}
+				m.showLoadFilter = false
+				return m, nil
+			}
+			return m, nil
+		}
+
 		// The action menu is modal: route all keys to it while open.
 		if m.actionMenu.Active() {
 			if msg.String() == "ctrl+c" {
@@ -304,6 +400,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if capturing {
 				break
 			}
+			m.saveState()
 			return m, tea.Quit
 		case "?":
 			// Open help, unless an input wants the literal "?".
@@ -374,6 +471,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.detail, cmd = m.detail.Load(next, job.Title, job.Owner)
 					return m, cmd
 				}
+				return m, nil
+			}
+		case "s":
+			// Save the current filter under a name.
+			if !capturing && m.activeView == ViewJobsList {
+				m.showSaveFilter = true
+				m.saveInput.SetValue("")
+				return m, m.saveInput.Focus()
+			}
+		case "f":
+			// Recall a saved filter.
+			if !capturing && m.activeView == ViewJobsList {
+				m.loadNames = m.stateData.FilterNames()
+				if len(m.loadNames) == 0 {
+					m.actionErr = false
+					m.actionMsg = "no saved filters"
+					return m, nil
+				}
+				m.showLoadFilter = true
+				m.loadCursor = 0
 				return m, nil
 			}
 		case "y":
@@ -601,6 +718,12 @@ func (m Model) View() string {
 	if m.showTrace {
 		return m.renderTrace() + "\n" + m.statusBar()
 	}
+	if m.showSaveFilter {
+		return m.renderSaveFilter() + "\n" + m.statusBar()
+	}
+	if m.showLoadFilter {
+		return m.renderLoadFilter() + "\n" + m.statusBar()
+	}
 	if m.actionMenu.Active() {
 		return m.actionMenu.View(m.width, m.height-1) + "\n" + m.statusBar()
 	}
@@ -647,6 +770,7 @@ func (m Model) renderHelp() string {
 	b.WriteString(section("Filtering & view",
 		row("/", "Open filter form"),
 		row("c", "Clear all filters"),
+		row("s / f", "Save / recall a named filter"),
 		row("m", "Toggle my jobs"),
 		row("e", "Toggle errors only"),
 		row("Space / A", "Select row / all (for bulk)"),
@@ -1040,6 +1164,49 @@ func (m Model) scrollActive(up bool) (tea.Model, tea.Cmd) {
 		m.jobsList, cmd = m.jobsList.Update(k)
 	}
 	return m, cmd
+}
+
+// saveState persists the current layout and saved filters (best effort).
+func (m Model) saveState() {
+	st := state.State{
+		TitleWidth: m.jobsList.LayoutTitleWidth(),
+		SortCol:    m.jobsList.LayoutSortCol(),
+		SortAsc:    m.jobsList.LayoutSortAsc(),
+		RelTime:    m.jobsList.LayoutRelTime(),
+		Filters:    m.stateData.Filters,
+	}
+	_ = st.Save()
+}
+
+func (m Model) renderSaveFilter() string {
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("86")).
+		Padding(1, 3).Width(50).
+		Render(lipgloss.NewStyle().Bold(true).Render("Save current filter as") + "\n\n" +
+			m.saveInput.View() + "\n\n" +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Enter save   Esc cancel"))
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, box)
+}
+
+func (m Model) renderLoadFilter() string {
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).
+		Render("Saved filters") + "\n\n")
+	for i, name := range m.loadNames {
+		cursor := "  "
+		st := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+		if i == m.loadCursor {
+			cursor = "› "
+			st = st.Bold(true).Background(lipgloss.Color("236"))
+		}
+		b.WriteString(cursor + st.Render(name) + "\n")
+	}
+	b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+		Render("Enter apply   d delete   Esc cancel"))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("86")).
+		Padding(1, 3).Width(50).Render(b.String())
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, box)
 }
 
 // bellCmd rings the terminal bell (used for watched-job notifications).

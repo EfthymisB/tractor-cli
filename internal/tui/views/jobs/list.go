@@ -547,6 +547,38 @@ func (m ListModel) SelectJID(jid int) ListModel {
 // SelectedJob returns the job under the cursor (exported wrapper).
 func (m ListModel) SelectedJob() (models.Job, bool) { return m.selectedJob() }
 
+// --- persisted layout / saved filters ---
+
+// ApplyLayout restores persisted UI preferences.
+func (m ListModel) ApplyLayout(titleWidth, sortCol int, sortAsc, relTime bool) ListModel {
+	m.titleWidth = titleWidth
+	if sortCol >= 0 && sortCol < numCols {
+		m.sortCol = sortCol
+	}
+	m.sortAsc = sortAsc
+	m.relTime = relTime
+	return m
+}
+
+// LayoutTitleWidth/LayoutSortCol/LayoutSortAsc/LayoutRelTime expose the current
+// layout for persistence.
+func (m ListModel) LayoutTitleWidth() int { return m.titleWidth }
+func (m ListModel) LayoutSortCol() int    { return m.sortCol }
+func (m ListModel) LayoutSortAsc() bool   { return m.sortAsc }
+func (m ListModel) LayoutRelTime() bool   { return m.relTime }
+
+// CurrentFilter returns the active server-side filter.
+func (m ListModel) CurrentFilter() api.JobFilter { return m.apiFilter }
+
+// ApplyFilter sets the server-side filter and reloads.
+func (m ListModel) ApplyFilter(f api.JobFilter) (ListModel, tea.Cmd) {
+	m.apiFilter = f
+	m.myJobs = false
+	m.errOnly = false
+	m.loading = true
+	return m, m.doFetch()
+}
+
 // SelectionCount returns the number of multi-selected jobs.
 func (m ListModel) SelectionCount() int { return len(m.selected) }
 

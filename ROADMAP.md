@@ -135,6 +135,19 @@ value-input step and a confirmation step for destructive actions.
 - [x] Trace output (`q=tracer`): `t` opens a scrollable overlay with the
       engine's diagnostics for the highlighted blade.
 
+## Quality-of-life features ✅
+
+- [x] Farm summary line (job status breakdown, task totals, slot/blade
+      utilisation, "mine").
+- [x] Lifted the job-filter cap (filtered queries via tractorselect /Tractor/db).
+- [x] Watch jobs (`w`) with completion/error notification (banner + bell).
+- [x] Clipboard yank (`y`, OSC 52) and open-log-in-`$PAGER` (`o`).
+- [x] Saved named filters (`s` save, `f` recall/delete) + persisted layout
+      (title width, sort, relative-time) in `~/.config/tractor-cli/state.json`.
+- [x] Relative-time toggle for SPOOLED (`T`).
+- [x] Mouse wheel scrolling.
+- [x] Blade heatmap grid (`g`).
+
 ## Phase 6 — Polish & release ⬜
 
 - [ ] README + usage docs; document config + `TRACTOR_PASSWORD` rule.
@@ -146,10 +159,8 @@ value-input step and a confirmation step for destructive actions.
 
 ## Known issues / tech debt
 
-- **`q=select` is unsupported** on our engine, so filtered job queries fall
-  back to `q=jobs` (capped at the engine default, ~2500). The high-limit
-  filtered path is dead code and still costs a failing request per filtered
-  search — should be removed, and investigate whether the cap can be raised.
+- ~~`q=select` is unsupported~~ — fixed: filtered job queries now go through
+  `tractorselect` over `/Tractor/db` (no cap).
 - **Owner-in-`%u` / log auth**: log URIs are fetched with the `TractorUser`
   cookie; if a site's logging service needs different auth this may need work.
 - **Selected row** in the jobs PROGRESS column renders monochrome (the row
