@@ -141,12 +141,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "]", "[":
-			// In the log view, jump to the next/previous task's log.
-			if m.activeView == ViewTaskLog && !capturing {
-				dir := 1
-				if msg.String() == "[" {
-					dir = -1
-				}
+			// Jump to the next/previous sibling: task log in the log view,
+			// job in the task view.
+			if capturing {
+				break
+			}
+			dir := 1
+			if msg.String() == "[" {
+				dir = -1
+			}
+			switch m.activeView {
+			case ViewTaskLog:
 				next := m.detail.AdjacentTID(m.logView.TID(), dir)
 				if next > 0 {
 					m.detail = m.detail.SelectTID(next)
@@ -154,6 +159,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.logView, cmd = m.logView.Load(
 						m.detail.JID(), next, m.detail.Owner(),
 						m.detail.JobTitle(), m.detail.TitleForTID(next))
+					return m, cmd
+				}
+				return m, nil
+			case ViewJobDetail:
+				next := m.jobsList.AdjacentJID(m.detail.JID(), dir)
+				if next > 0 {
+					m.jobsList = m.jobsList.SelectJID(next)
+					job, _ := m.jobsList.JobByJID(next)
+					var cmd tea.Cmd
+					m.detail, cmd = m.detail.Load(next, job.Title, job.Owner)
 					return m, cmd
 				}
 				return m, nil
@@ -279,6 +294,7 @@ func (m Model) renderHelp() string {
 	b.WriteString(section("Tasks view",
 		row("/", "Search by title"),
 		row("1 – 7", "Sort by column"),
+		row("[ / ]", "Previous / next job's tasks"),
 		row("Enter", "Open the task's log"),
 		row("R", "Refresh tasks"),
 	) + "\n\n")
@@ -295,7 +311,7 @@ func (m Model) renderHelp() string {
 	b.WriteString(section("Filter form",
 		row("Tab / ⇧Tab", "Move between fields"),
 		row("Space", "Toggle status chip"),
-		row("→", "Accept owner autocomplete"),
+		row("↑/↓ then →", "Owner/projects autocomplete"),
 		row("Enter / Esc", "Apply / cancel"),
 	) + "\n\n")
 	b.WriteString(section("General",

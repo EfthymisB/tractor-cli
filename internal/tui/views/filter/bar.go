@@ -64,8 +64,9 @@ type Model struct {
 	statusSel map[string]bool // selected statuses
 	statusCur int             // sub-cursor among status chips
 
-	usernames []string // owner autocomplete source (getent passwd)
-	acIndex   int      // highlighted autocomplete match
+	usernames    []string // owner autocomplete source (getent passwd + job owners)
+	projectNames []string // projects autocomplete source (from job projects)
+	acIndex      int      // highlighted autocomplete match
 
 	width int
 }
@@ -98,22 +99,34 @@ func (m Model) Active() bool { return m.active }
 // replaces. The form renders its own dropdown (see renderDropdown), so we don't
 // enable bubbles' built-in inline suggestions.
 func (m Model) AddUsernames(names []string) Model {
-	set := make(map[string]struct{}, len(m.usernames)+len(names))
-	for _, u := range m.usernames {
-		set[u] = struct{}{}
+	m.usernames = mergeSorted(m.usernames, names)
+	return m
+}
+
+// AddProjects merges project names into the projects autocomplete source
+// (unioned, deduplicated, sorted).
+func (m Model) AddProjects(names []string) Model {
+	m.projectNames = mergeSorted(m.projectNames, names)
+	return m
+}
+
+// mergeSorted unions two string slices, trimming, dropping empties, and sorting.
+func mergeSorted(existing, add []string) []string {
+	set := make(map[string]struct{}, len(existing)+len(add))
+	for _, s := range existing {
+		set[s] = struct{}{}
 	}
-	for _, u := range names {
-		if u = strings.TrimSpace(u); u != "" {
-			set[u] = struct{}{}
+	for _, s := range add {
+		if s = strings.TrimSpace(s); s != "" {
+			set[s] = struct{}{}
 		}
 	}
-	merged := make([]string, 0, len(set))
-	for u := range set {
-		merged = append(merged, u)
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
 	}
-	sort.Strings(merged)
-	m.usernames = merged
-	return m
+	sort.Strings(out)
+	return out
 }
 
 // Open makes the form visible, pre-populating every field from cur so existing
@@ -152,7 +165,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.updateFocusedInput(msg)
 	}
 
-	dropdown := m.ownerDropdownOpen()
+	dropdown := m.acDropdownOpen()
 
 	switch key.String() {
 	case "esc":
@@ -168,7 +181,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case "tab":
 		if dropdown {
-			m = m.acceptOwnerMatch()
+			m = m.acceptMatch()
 			return m, nil
 		}
 		return m.focusField(m.nextField())
@@ -194,7 +207,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case "right":
 		if dropdown {
-			m = m.acceptOwnerMatch()
+			m = m.acceptMatch()
 			return m, nil
 		}
 		// no dropdown: exit switch so a text field gets the cursor move,
@@ -261,13 +274,16 @@ func (m Model) View(width int) string {
 
 	var b strings.Builder
 	b.WriteString(m.row("Owner", fieldOwner, m.owner.View()))
-	if m.ownerDropdownOpen() {
+	if m.focus == fieldOwner && m.acDropdownOpen() {
 		b.WriteString("\n" + m.renderDropdown())
 	}
 	b.WriteString("\n" + m.row("Status", fieldStatus, m.renderStatus()))
 	b.WriteString("\n" + m.row("JID", fieldJID, m.jid.View()))
 	b.WriteString("\n" + m.row("Priority", fieldPrio, m.prio.View()))
 	b.WriteString("\n" + m.row("Projects", fieldProjects, m.projects.View()))
+	if m.focus == fieldProjects && m.acDropdownOpen() {
+		b.WriteString("\n" + m.renderDropdown())
+	}
 	b.WriteString("\n" + m.row("Title", fieldTitle, m.title.View()))
 	b.WriteString("\n" + m.helpLine())
 
@@ -280,8 +296,8 @@ func (m Model) Height() int {
 		return 0
 	}
 	lines := numFields + 1 // field rows + help row
-	if m.ownerDropdownOpen() {
-		lines += len(m.ownerMatches())
+	if m.acDropdownOpen() {
+		lines += len(m.acMatches())
 	}
 	return lines + 2 // rounded border top + bottom
 }
@@ -320,7 +336,7 @@ func (m Model) renderStatus() string {
 }
 
 func (m Model) renderDropdown() string {
-	matches := m.ownerMatches()
+	matches := m.acMatches()
 	pad := strings.Repeat(" ", labelWidth+2)
 	lines := make([]string, len(matches))
 	for i, mm := range matches {
@@ -372,24 +388,63 @@ func (m *Model) blurAll() {
 func (m Model) nextField() int { return (m.focus + 1) % numFields }
 func (m Model) prevField() int { return (m.focus - 1 + numFields) % numFields }
 
-// --- owner autocomplete ---
+// --- autocomplete (owner and projects fields) ---
 
-func (m Model) ownerDropdownOpen() bool {
-	return m.active && m.focus == fieldOwner && len(m.ownerMatches()) > 0
+// acField reports whether the focused field has autocomplete.
+func (m Model) acField() bool {
+	return m.focus == fieldOwner || m.focus == fieldProjects
 }
 
-// ownerMatches returns up to maxOwnerMatches usernames that prefix-match the
-// segment after the last comma in the owner input.
-func (m Model) ownerMatches() []string {
-	seg := lastSegment(m.owner.Value())
+// acSource returns the suggestion list for the focused field.
+func (m Model) acSource() []string {
+	switch m.focus {
+	case fieldOwner:
+		return m.usernames
+	case fieldProjects:
+		return m.projectNames
+	}
+	return nil
+}
+
+// acValue returns the current value of the focused autocomplete field.
+func (m Model) acValue() string {
+	switch m.focus {
+	case fieldOwner:
+		return m.owner.Value()
+	case fieldProjects:
+		return m.projects.Value()
+	}
+	return ""
+}
+
+// acSetValue sets the focused autocomplete field's value (cursor to end).
+func (m *Model) acSetValue(v string) {
+	switch m.focus {
+	case fieldOwner:
+		m.owner.SetValue(v)
+		m.owner.CursorEnd()
+	case fieldProjects:
+		m.projects.SetValue(v)
+		m.projects.CursorEnd()
+	}
+}
+
+func (m Model) acDropdownOpen() bool {
+	return m.active && m.acField() && len(m.acMatches()) > 0
+}
+
+// acMatches returns up to maxOwnerMatches suggestions that prefix-match the
+// segment after the last comma in the focused field.
+func (m Model) acMatches() []string {
+	seg := lastSegment(m.acValue())
 	if seg == "" {
 		return nil
 	}
 	segL := strings.ToLower(seg)
 	var out []string
-	for _, u := range m.usernames {
-		if strings.HasPrefix(strings.ToLower(u), segL) {
-			out = append(out, u)
+	for _, s := range m.acSource() {
+		if strings.HasPrefix(strings.ToLower(s), segL) {
+			out = append(out, s)
 			if len(out) >= maxOwnerMatches {
 				break
 			}
@@ -402,8 +457,8 @@ func (m Model) ownerMatches() []string {
 	return out
 }
 
-func (m Model) acceptOwnerMatch() Model {
-	matches := m.ownerMatches()
+func (m Model) acceptMatch() Model {
+	matches := m.acMatches()
 	if len(matches) == 0 {
 		return m
 	}
@@ -411,19 +466,18 @@ func (m Model) acceptOwnerMatch() Model {
 	if idx < 0 || idx >= len(matches) {
 		idx = 0
 	}
-	val := m.owner.Value()
+	val := m.acValue()
 	prefix := ""
 	if c := strings.LastIndex(val, ","); c >= 0 {
 		prefix = val[:c+1]
 	}
-	m.owner.SetValue(prefix + matches[idx])
-	m.owner.CursorEnd()
+	m.acSetValue(prefix + matches[idx])
 	m.acIndex = 0
 	return m
 }
 
 func (m Model) clampAC() Model {
-	n := len(m.ownerMatches())
+	n := len(m.acMatches())
 	if n == 0 {
 		m.acIndex = 0
 		return m

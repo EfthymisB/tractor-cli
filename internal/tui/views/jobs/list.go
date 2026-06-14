@@ -162,9 +162,10 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		m.topRow = 0
 		m.table.SetColumns(m.makeColumns())
 		m.table.SetRows(m.buildRows())
-		// Seed owner autocomplete from the owners present in the result set;
-		// this always works even when getent passwd cannot enumerate LDAP.
+		// Seed owner/projects autocomplete from the result set; this always
+		// works even when getent passwd cannot enumerate LDAP.
 		m.filterBar = m.filterBar.AddUsernames(distinctOwners(msg.jobs))
+		m.filterBar = m.filterBar.AddProjects(distinctProjects(msg.jobs))
 
 	case fetchErrMsg:
 		m.loading = false
@@ -350,6 +351,44 @@ func (m ListModel) SelectedOwner() string {
 		return ""
 	}
 	return row[colOwner]
+}
+
+// AdjacentJID returns the job id dir steps away from jid in the current
+// (filtered/sorted) order, or 0 if out of range.
+func (m ListModel) AdjacentJID(jid, dir int) int {
+	for i, j := range m.jobs {
+		if j.JID == jid {
+			k := i + dir
+			if k >= 0 && k < len(m.jobs) {
+				return m.jobs[k].JID
+			}
+			return 0
+		}
+	}
+	return 0
+}
+
+// SelectJID moves the cursor to the row for jid, so navigating jobs from the
+// task view keeps the list selection in sync.
+func (m ListModel) SelectJID(jid int) ListModel {
+	for i, j := range m.jobs {
+		if j.JID == jid {
+			m.table.SetCursor(i)
+			m = m.syncTopRow()
+			break
+		}
+	}
+	return m
+}
+
+// JobByJID returns the job with the given id, if present.
+func (m ListModel) JobByJID(jid int) (models.Job, bool) {
+	for _, j := range m.jobs {
+		if j.JID == jid {
+			return j, true
+		}
+	}
+	return models.Job{}, false
 }
 
 // --- private helpers ---
@@ -874,6 +913,27 @@ func distinctOwners(jobs []models.Job) []string {
 		}
 		seen[j.Owner] = struct{}{}
 		out = append(out, j.Owner)
+	}
+	return out
+}
+
+// distinctProjects returns the unique, non-empty project names across the jobs.
+// Job.Projects is a comma-joined string, so each is split into its members.
+func distinctProjects(jobs []models.Job) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, j := range jobs {
+		for _, p := range strings.Split(j.Projects, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
 	}
 	return out
 }
