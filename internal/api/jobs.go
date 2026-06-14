@@ -333,7 +333,7 @@ func applyClientFilters(jobs []models.Job, f JobFilter) []models.Job {
 	if f.IsEmpty() {
 		return jobs
 	}
-	out := jobs[:0]
+	out := make([]models.Job, 0, len(jobs))
 	for _, j := range jobs {
 		if matchesFilter(j, f) {
 			out = append(out, j)
