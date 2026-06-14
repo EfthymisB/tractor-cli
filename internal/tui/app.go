@@ -287,6 +287,8 @@ func (m Model) renderHelp() string {
 		row("c", "Clear search"),
 		row("n / N", "Next / previous match"),
 		row("[ / ]", "Previous / next task's log"),
+		row("w", "Toggle wrap / horizontal scroll"),
+		row("←/→", "Scroll horizontally (no-wrap)"),
 		row("g / G", "Top / bottom"),
 		row("R", "Refresh log"),
 	) + "\n\n")

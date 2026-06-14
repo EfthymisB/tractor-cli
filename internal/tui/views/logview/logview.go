@@ -37,9 +37,14 @@ type Model struct {
 	jobTitle  string
 	taskTitle string
 	lines     []string
-	matches   []int // indices of lines matching the active query
+	matches   []int // original line indices matching the active query
 	matchPos  int
 	query     string
+
+	wrap       bool  // wrap long lines vs. horizontal scroll
+	xOffset    int   // horizontal scroll offset (when not wrapping)
+	maxLineLen int   // longest line length, for clamping xOffset
+	lineStart  []int // display-row index of each original line's first row
 
 	searching bool
 	loading   bool
@@ -63,7 +68,7 @@ func New(client *api.Client, cfg *config.Config) Model {
 	ti.Prompt = ""
 	ti.CharLimit = 128
 
-	return Model{spinner: sp, search: ti, client: client, cfg: cfg}
+	return Model{spinner: sp, search: ti, client: client, cfg: cfg, wrap: true}
 }
 
 // Load points the viewer at a task and fetches its log.
@@ -77,6 +82,9 @@ func (m Model) Load(jid, tid int, owner, jobTitle, taskTitle string) (Model, tea
 	m.matches = nil
 	m.matchPos = 0
 	m.query = ""
+	m.xOffset = 0
+	m.maxLineLen = 0
+	m.lineStart = nil
 	m.searching = false
 	m.search.SetValue("")
 	m.search.Blur()
@@ -120,7 +128,7 @@ func (m Model) SetSize(w, h int) Model {
 		m.viewport.Width = w
 		m.viewport.Height = m.viewportHeight()
 	}
-	m.viewport.SetContent(m.renderContent())
+	m.setContent()
 	return m
 }
 
@@ -154,8 +162,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.err = nil
 		text := strings.ReplaceAll(msg.text, "\r\n", "\n")
 		m.lines = strings.Split(text, "\n")
+		m.maxLineLen = 0
+		for _, ln := range m.lines {
+			if n := len([]rune(ln)); n > m.maxLineLen {
+				m.maxLineLen = n
+			}
+		}
 		if m.ready {
-			m.viewport.SetContent(m.renderContent())
+			m.setContent()
 			m.viewport.GotoBottom() // show the most recent output
 		}
 		return m, nil
@@ -165,7 +179,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.loading = false
 			m.err = msg.err
 			if m.ready {
-				m.viewport.SetContent(m.renderContent())
+				m.setContent()
 			}
 		}
 		return m, nil
@@ -175,7 +189,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
 		if m.loading && m.ready {
-			m.viewport.SetContent(m.renderContent())
+			m.setContent()
 		}
 
 	case tea.KeyMsg:
@@ -209,14 +223,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.matches = nil
 			m.matchPos = 0
 			if m.ready {
-				m.viewport.SetContent(m.renderContent())
+				m.setContent()
 			}
 			return m, nil
 		case "R":
 			// Re-fetch the current task's log.
 			m.loading = true
 			if m.ready {
-				m.viewport.SetContent(m.renderContent())
+				m.setContent()
 			}
 			return m, tea.Batch(m.fetch(), m.spinner.Tick)
 		case "n":
@@ -231,6 +245,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "G":
 			m.viewport.GotoBottom()
 			return m, nil
+		case "w":
+			// Toggle line wrapping vs. horizontal scrolling.
+			m.wrap = !m.wrap
+			m.xOffset = 0
+			if m.ready {
+				m.setContent()
+			}
+			return m, nil
+		case "left", "h":
+			if !m.wrap {
+				m.scrollH(-hScrollStep)
+				return m, nil
+			}
+		case "right", "l":
+			if !m.wrap {
+				m.scrollH(hScrollStep)
+				return m, nil
+			}
 		}
 	}
 
@@ -253,7 +285,7 @@ func (m *Model) applySearch() {
 		}
 	}
 	if m.ready {
-		m.viewport.SetContent(m.renderContent())
+		m.setContent()
 	}
 	if len(m.matches) > 0 {
 		m.jumpTo(m.matches[0])
@@ -266,7 +298,7 @@ func (m *Model) nextMatch(dir int) {
 	}
 	m.matchPos = (m.matchPos + dir + len(m.matches)) % len(m.matches)
 	if m.ready {
-		m.viewport.SetContent(m.renderContent())
+		m.setContent()
 	}
 	m.jumpTo(m.matches[m.matchPos])
 }
@@ -275,11 +307,30 @@ func (m *Model) jumpTo(line int) {
 	if !m.ready {
 		return
 	}
-	off := line - m.viewport.Height/2
+	disp := line
+	if line >= 0 && line < len(m.lineStart) {
+		disp = m.lineStart[line] // map original line → display row
+	}
+	off := disp - m.viewport.Height/2
 	if off < 0 {
 		off = 0
 	}
 	m.viewport.SetYOffset(off)
+}
+
+// scrollH adjusts the horizontal offset (no-wrap mode), clamped so you can't
+// scroll past the longest line.
+func (m *Model) scrollH(delta int) {
+	m.xOffset += delta
+	if m.xOffset < 0 {
+		m.xOffset = 0
+	}
+	if max := m.maxLineLen - 1; m.xOffset > max && max > 0 {
+		m.xOffset = max
+	}
+	if m.ready {
+		m.setContent()
+	}
 }
 
 // View renders the log viewer.
@@ -316,20 +367,34 @@ func (m Model) renderHeader() string {
 			title += fmt.Sprintf("   match %d/%d for %q", m.matchPos+1, len(m.matches), m.query)
 		}
 	}
+	wrapHint := "[w] wrap:on"
+	if !m.wrap {
+		wrapHint = "[w] wrap:off  [←/→] scroll"
+	}
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-		Render("   [Esc] back  [/] search  [c] clear  [n/N] match  [[ ]] task  [R] refresh")
+		Render("   [Esc] back  [/] search  [c] clear  [n/N] match  [[ ]] task  [R] refresh  " + wrapHint)
 	return styles.Title.Render(title) + hint
 }
 
-func (m Model) renderContent() string {
+// hScrollStep is how many columns a left/right press scrolls in no-wrap mode.
+const hScrollStep = 12
+
+// setContent rebuilds the viewport content and the original→display line map.
+func (m *Model) setContent() {
 	if m.loading {
-		return "Loading log… " + m.spinner.View()
+		m.lineStart = nil
+		m.viewport.SetContent("Loading log… " + m.spinner.View())
+		return
 	}
 	if m.err != nil {
-		return styles.ErrorStyle.Render("Error: " + m.err.Error())
+		m.lineStart = nil
+		m.viewport.SetContent(styles.ErrorStyle.Render("Error: " + m.err.Error()))
+		return
 	}
 	if len(m.lines) == 0 || (len(m.lines) == 1 && m.lines[0] == "") {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(no log output)")
+		m.lineStart = nil
+		m.viewport.SetContent(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("(no log output)"))
+		return
 	}
 
 	matchSet := make(map[int]bool, len(m.matches))
@@ -341,14 +406,56 @@ func (m Model) renderContent() string {
 		cur = m.matches[m.matchPos]
 	}
 
-	var b strings.Builder
-	for i, ln := range m.lines {
-		if i > 0 {
-			b.WriteByte('\n')
+	width := m.viewport.Width
+	lineStart := make([]int, len(m.lines))
+	var display []string
+	for i, raw := range m.lines {
+		lineStart[i] = len(display)
+		matched, isCur := matchSet[i], i == cur
+		if m.wrap {
+			for _, seg := range hardWrap(raw, width) {
+				display = append(display, styleLogLine(seg, matched, isCur))
+			}
+		} else {
+			display = append(display, styleLogLine(sliceH(raw, m.xOffset, width), matched, isCur))
 		}
-		b.WriteString(styleLogLine(ln, matchSet[i], i == cur))
 	}
-	return b.String()
+	m.lineStart = lineStart
+	m.viewport.SetContent(strings.Join(display, "\n"))
+}
+
+// hardWrap splits s into rune chunks of at most width (character wrapping, so
+// no characters are lost on unbreakable tokens).
+func hardWrap(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	r := []rune(s)
+	if len(r) <= width {
+		return []string{s}
+	}
+	var out []string
+	for len(r) > width {
+		out = append(out, string(r[:width]))
+		r = r[width:]
+	}
+	return append(out, string(r))
+}
+
+// sliceH returns the width-wide horizontal window of s starting at off.
+func sliceH(s string, off, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if off >= len(r) {
+		return ""
+	}
+	end := off + width
+	if end > len(r) {
+		end = len(r)
+	}
+	return string(r[off:end])
 }
 
 // logToken matches the syntactic pieces we colour. Order of alternation sets
