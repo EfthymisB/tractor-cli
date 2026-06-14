@@ -65,6 +65,7 @@ type DetailModel struct {
 
 	jid      int
 	jobTitle string
+	jobOwner string
 	allTasks []models.Task // unfiltered
 	tasks    []models.Task // after title filter + sort
 
@@ -110,9 +111,10 @@ func NewDetail(client *api.Client, cfg *config.Config) DetailModel {
 }
 
 // Load points the detail view at a job and kicks off a task fetch.
-func (m DetailModel) Load(jid int, title string) (DetailModel, tea.Cmd) {
+func (m DetailModel) Load(jid int, title, owner string) (DetailModel, tea.Cmd) {
 	m.jid = jid
 	m.jobTitle = title
+	m.jobOwner = owner
 	m.allTasks = nil
 	m.tasks = nil
 	m.err = nil
@@ -401,7 +403,8 @@ func (m DetailModel) SetSize(w, h int) DetailModel {
 }
 
 // State accessors used by the root model.
-func (m DetailModel) JID() int          { return m.jid }
+func (m DetailModel) JID() int           { return m.jid }
+func (m DetailModel) Owner() string      { return m.jobOwner }
 func (m DetailModel) TaskCount() int     { return len(m.tasks) }
 func (m DetailModel) IsLoading() bool    { return m.loading }
 func (m DetailModel) Err() error         { return m.err }

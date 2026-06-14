@@ -126,7 +126,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if jid := m.jobsList.SelectedJID(); jid > 0 {
 					m.activeView = ViewJobDetail
 					var cmd tea.Cmd
-					m.detail, cmd = m.detail.Load(jid, m.jobsList.SelectedTitle())
+					m.detail, cmd = m.detail.Load(jid, m.jobsList.SelectedTitle(), m.jobsList.SelectedOwner())
 					return m, cmd
 				}
 			case ViewJobDetail:
@@ -134,7 +134,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if tid := m.detail.SelectedTID(); tid > 0 {
 					m.activeView = ViewTaskLog
 					var cmd tea.Cmd
-					m.logView, cmd = m.logView.Load(m.detail.JID(), tid, "")
+					m.logView, cmd = m.logView.Load(m.detail.JID(), tid, m.detail.Owner())
 					return m, cmd
 				}
 			}

@@ -46,6 +46,11 @@ func (c *Client) TaskLog(jid, tid int, owner string) (string, error) {
 
 	var sb strings.Builder
 	for _, uri := range resp.LoggingRedirect {
+		// The engine leaves a "%u" placeholder for the job owner in the log
+		// path; substitute it (an unescaped "%u" is also an invalid URL escape).
+		if owner != "" {
+			uri = strings.ReplaceAll(uri, "%u", owner)
+		}
 		body, err := c.getLogURI(uri)
 		if err != nil {
 			fmt.Fprintf(&sb, "\n[tractor-cli: error fetching log segment %s: %v]\n", uri, err)

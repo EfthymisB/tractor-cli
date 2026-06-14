@@ -343,6 +343,15 @@ func (m ListModel) SelectedTitle() string {
 	return row[colTitle]
 }
 
+// SelectedOwner returns the owner of the currently highlighted row, or "".
+func (m ListModel) SelectedOwner() string {
+	row := m.table.SelectedRow()
+	if len(row) == 0 {
+		return ""
+	}
+	return row[colOwner]
+}
+
 // --- private helpers ---
 
 func (m ListModel) doFetch() tea.Cmd {
