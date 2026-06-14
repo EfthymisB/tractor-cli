@@ -1227,8 +1227,9 @@ func yankCmd(text string) tea.Cmd {
 }
 
 func copyToClipboard(text string) {
-	// OSC 52, written straight to the controlling terminal.
-	seq := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\x07"
+	// OSC 52, written straight to the controlling terminal. Use the ST
+	// terminator (more widely accepted than BEL for OSC 52).
+	seq := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\x1b\\"
 	if os.Getenv("TMUX") != "" {
 		// tmux passthrough: wrap and double the inner ESCs.
 		seq = "\x1bPtmux;" + strings.ReplaceAll(seq, "\x1b", "\x1b\x1b") + "\x1b\\"
@@ -1236,9 +1237,9 @@ func copyToClipboard(text string) {
 	if tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
 		_, _ = tty.WriteString(seq)
 		_ = tty.Close()
-	} else {
-		fmt.Fprint(os.Stdout, seq)
 	}
+	// Also write to stdout, in case /dev/tty isn't the terminal.
+	fmt.Fprint(os.Stdout, seq)
 
 	// Best-effort local clipboard tools (work without OSC 52 support).
 	for _, c := range [][]string{

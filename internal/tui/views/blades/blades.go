@@ -336,7 +336,7 @@ func (m Model) renderHeatmap() string {
 func heatCell(b models.Blade, selected bool) string {
 	block := lipgloss.NewStyle().Foreground(lipgloss.Color(bladeHeatColor(b))).Render("██")
 	if selected {
-		fr := lipgloss.NewStyle().Foreground(lipgloss.Color("153")) // light blue
+		fr := lipgloss.NewStyle().Foreground(lipgloss.Color("9")) // red
 		return fr.Render("▕") + block + fr.Render("▏")
 	}
 	return " " + block + " "
