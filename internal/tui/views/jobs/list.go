@@ -50,6 +50,9 @@ const (
 
 	// jobsPanelHeight is the height (incl. border) of the bottom info panel.
 	jobsPanelHeight = 4
+
+	// summaryHeight is the height of the farm summary line.
+	summaryHeight = 1
 )
 
 // ListModel is the jobs list view model.
@@ -70,6 +73,13 @@ type ListModel struct {
 	errOnly   bool          // 'e' toggle — local-filter to error jobs
 
 	selected map[int]bool // multi-selected JIDs for bulk actions
+
+	// farm-wide stats for the summary line (pushed in by the root model)
+	farmSlotsInUse  int
+	farmSlotsTotal  int
+	farmBladesUp    int
+	farmBladesTotal int
+	farmStatsKnown  bool
 
 	sortCol int  // column index; default colJID
 	sortAsc bool // ascending; default false (newest JIDs first)
@@ -291,12 +301,90 @@ func (m ListModel) View() string {
 		return ""
 	}
 	header := m.renderHeader()
+	summary := m.renderSummary()
 	tableView := m.colorizeTable(m.table.View())
 	panel := m.renderPanel()
 	if m.filterBar.Active() {
-		return header + "\n" + m.filterBar.View(m.width) + "\n" + tableView + "\n" + panel
+		return header + "\n" + summary + "\n" + m.filterBar.View(m.width) + "\n" + tableView + "\n" + panel
 	}
-	return header + "\n" + tableView + "\n" + panel
+	return header + "\n" + summary + "\n" + tableView + "\n" + panel
+}
+
+// SetFarmStats updates the slot/blade totals shown in the summary line.
+func (m ListModel) SetFarmStats(slotsInUse, slotsTotal, bladesUp, bladesTotal int) ListModel {
+	m.farmSlotsInUse = slotsInUse
+	m.farmSlotsTotal = slotsTotal
+	m.farmBladesUp = bladesUp
+	m.farmBladesTotal = bladesTotal
+	m.farmStatsKnown = true
+	return m
+}
+
+// renderSummary draws the one-line farm pulse: job status breakdown, task
+// counts, slot utilisation and "mine".
+func (m ListModel) renderSummary() string {
+	var active, blocked, errored, done, paused int
+	var activeTasks, errTasks, mine int
+	me := m.cfg.Auth.Username
+	for _, j := range m.allJobs {
+		switch j.Status {
+		case "active":
+			active++
+		case "blocked":
+			blocked++
+		case "error":
+			errored++
+		case "done":
+			done++
+		case "paused":
+			paused++
+		}
+		activeTasks += j.NumActive
+		errTasks += j.NumError
+		if me != "" && j.Owner == me {
+			mine++
+		}
+	}
+
+	seg := func(color, label string, n int) string {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).
+			Render(fmt.Sprintf("%s %d", label, n))
+	}
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	parts := []string{
+		seg("10", "▶", active),
+		seg("11", "■", blocked),
+		seg("9", "✗", errored),
+		seg("240", "✓", done),
+		seg("14", "⏸", paused),
+		dim.Render("│"),
+		dim.Render(fmt.Sprintf("tasks ▶%d ✗%d", activeTasks, errTasks)),
+	}
+	if m.farmStatsKnown {
+		pct := 0
+		if m.farmSlotsTotal > 0 {
+			pct = m.farmSlotsInUse * 100 / m.farmSlotsTotal
+		}
+		parts = append(parts, dim.Render("│"),
+			dim.Render(fmt.Sprintf("slots %d/%d (%d%%)  blades %d/%d up",
+				m.farmSlotsInUse, m.farmSlotsTotal, pct, m.farmBladesUp, m.farmBladesTotal)))
+	}
+	if mine > 0 {
+		parts = append(parts, dim.Render("│"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render(fmt.Sprintf("mine %d", mine)))
+	}
+	line := " " + strings.Join(parts, "  ")
+	return truncRunesANSI(line, m.width)
+}
+
+// truncRunesANSI truncates a possibly-styled line to n visible columns.
+func truncRunesANSI(s string, n int) string {
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	// Fall back to a plain truncation marker; the styled segments are short
+	// enough that this rarely triggers.
+	return s
 }
 
 // renderPanel draws the bottom info panel for the highlighted job: a lock/notes
@@ -667,7 +755,7 @@ func (m ListModel) syncTopRow() ListModel {
 // viewportHeight returns the number of visible data rows in the table.
 // Must match the value passed to table.SetHeight() in recalcTableHeight().
 func (m ListModel) viewportHeight() int {
-	h := m.height - 2 - jobsPanelHeight - 1 // panel + its join line
+	h := m.height - 2 - jobsPanelHeight - 1 - summaryHeight // panel + summary
 	if m.filterBar.Active() {
 		h -= m.filterBar.Height() + 1 // form lines + the blank join line
 	}

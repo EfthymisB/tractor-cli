@@ -97,8 +97,36 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.jobsList.Init(),
 		m.spinner.Tick,
+		m.fetchFarmStats(),
 		scheduleTick(time.Duration(m.cfg.UI.RefreshInterval)*time.Second),
 	)
+}
+
+// farmStatsMsg carries farm-wide slot/blade totals for the jobs summary line.
+type farmStatsMsg struct {
+	slotsInUse, slotsTotal, bladesUp, bladesTotal int
+}
+
+// fetchFarmStats queries all blades to compute slot utilisation. Errors are
+// ignored (the summary just omits the slot figures).
+func (m Model) fetchFarmStats() tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		bl, err := client.QueryBlades()
+		if err != nil {
+			return farmStatsMsg{}
+		}
+		var inUse, total, up int
+		now := time.Now()
+		for _, b := range bl {
+			total += b.NumSlots
+			inUse += b.SlotsInUse
+			if b.Heartbeat > 0 && now.Sub(time.Unix(int64(b.Heartbeat), 0)) < 6*time.Minute {
+				up++
+			}
+		}
+		return farmStatsMsg{slotsInUse: inUse, slotsTotal: total, bladesUp: up, bladesTotal: len(bl)}
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -127,6 +155,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.runAction(msg)
 
 	case action.CancelMsg:
+		return m, nil
+
+	case farmStatsMsg:
+		m.jobsList = m.jobsList.SetFarmStats(
+			msg.slotsInUse, msg.slotsTotal, msg.bladesUp, msg.bladesTotal)
 		return m, nil
 
 	case traceLoadedMsg:
@@ -431,7 +464,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.jobsList, refreshCmd = m.jobsList.Refresh()
 		}
-		cmds = append(cmds, refreshCmd)
+		cmds = append(cmds, refreshCmd, m.fetchFarmStats())
 		if m.cfg.UI.RefreshInterval > 0 {
 			cmds = append(cmds, scheduleTick(time.Duration(m.cfg.UI.RefreshInterval)*time.Second))
 		}
