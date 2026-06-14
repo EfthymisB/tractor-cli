@@ -11,15 +11,19 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Target identifies what an action operates on.
+// Target identifies what an action operates on. For bulk operations Bulk is
+// true and JIDs (jobs) or TIDs (tasks, with JID set) hold the set.
 type Target struct {
-	Kind   string // "job", "task" or "blade"
+	Kind   string // "job", "task", "blade", "jobs" or "tasks"
 	JID    int
 	TID    int
 	Name   string // blade name
 	Addr   string // blade ip address
 	Label  string // human label, e.g. "Job 123 — comp"
 	Paused bool   // job paused state (for pause/unpause)
+	Bulk   bool
+	JIDs   []int // bulk job ids
+	TIDs   []int // bulk task ids (within JID)
 }
 
 // Item is one selectable action.
@@ -91,6 +95,20 @@ func (m Model) OpenBlade(name, addr, label string, nimbied bool) Model {
 	return m.reset()
 }
 
+// OpenJobsBulk opens the menu with job actions applied to several jobs.
+func (m Model) OpenJobsBulk(jids []int, label string) Model {
+	m.target = Target{Kind: "jobs", Bulk: true, JIDs: jids, Label: label}
+	m.items = bulkJobItems()
+	return m.reset()
+}
+
+// OpenTasksBulk opens the menu with task actions applied to several tasks of a job.
+func (m Model) OpenTasksBulk(jid int, tids []int, label string) Model {
+	m.target = Target{Kind: "tasks", Bulk: true, JID: jid, TIDs: tids, Label: label}
+	m.items = taskItems()
+	return m.reset()
+}
+
 func (m Model) reset() Model {
 	m.active = true
 	m.cursor = 0
@@ -115,6 +133,22 @@ func jobItems(paused bool) []Item {
 		{Label: "Interrupt (kill active)", Op: "interrupt", Destructive: true},
 		{Label: "Restart job", Op: "restart", Destructive: true},
 		{Label: "Delete job", Op: "delete", Destructive: true},
+	}
+}
+
+// bulkJobItems offers both pause and unpause explicitly (the paused state
+// varies across a selection).
+func bulkJobItems() []Item {
+	return []Item{
+		{Label: "Pause", Op: "pause"},
+		{Label: "Unpause", Op: "unpause"},
+		{Label: "Retry errored tasks", Op: "retry-errors"},
+		{Label: "Retry active tasks", Op: "retry-active"},
+		{Label: "Skip errored tasks", Op: "skip-errors"},
+		{Label: "Set priority…", Op: "chpri", InputPrompt: "New priority"},
+		{Label: "Interrupt (kill active)", Op: "interrupt", Destructive: true},
+		{Label: "Restart jobs", Op: "restart", Destructive: true},
+		{Label: "Delete jobs", Op: "delete", Destructive: true},
 	}
 }
 

@@ -73,6 +73,8 @@ type DetailModel struct {
 	sortCol   int
 	sortAsc   bool
 
+	selected map[int]bool // multi-selected TIDs for bulk actions
+
 	// bottom info panel for the highlighted task
 	detailTID     int
 	taskDetail    models.TaskDetail
@@ -100,13 +102,14 @@ func NewDetail(client *api.Client, cfg *config.Config) DetailModel {
 	ti.CharLimit = 128
 
 	return DetailModel{
-		table:   newTable(),
-		spinner: sp,
-		search:  ti,
-		sortCol: dcolTID,
-		sortAsc: true,
-		client:  client,
-		cfg:     cfg,
+		table:    newTable(),
+		spinner:  sp,
+		search:   ti,
+		selected: make(map[int]bool),
+		sortCol:  dcolTID,
+		sortAsc:  true,
+		client:   client,
+		cfg:      cfg,
 	}
 }
 
@@ -128,6 +131,7 @@ func (m DetailModel) Load(jid int, title, owner string) (DetailModel, tea.Cmd) {
 	m.detailTID = 0
 	m.taskDetail = models.TaskDetail{}
 	m.detailLoading = false
+	m.selected = make(map[int]bool)
 	m.table.SetRows(nil)
 	return m, tea.Batch(m.fetchTasks(), m.spinner.Tick)
 }
@@ -245,6 +249,21 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 				var dcmd tea.Cmd
 				m, dcmd = m.maybeFetchDetail()
 				return m, dcmd
+			}
+			return m, nil
+		case " ", "space":
+			// Toggle multi-selection on the highlighted task.
+			if tid := m.SelectedTID(); tid > 0 {
+				if m.selected[tid] {
+					delete(m.selected, tid)
+				} else {
+					m.selected[tid] = true
+				}
+			}
+			return m, nil
+		case "A":
+			for _, t := range m.tasks {
+				m.selected[t.TID] = true
 			}
 			return m, nil
 		}
@@ -465,6 +484,25 @@ func (m DetailModel) RefreshPanel() (DetailModel, tea.Cmd) {
 	return m.maybeFetchDetail()
 }
 
+// SelectionCount returns the number of multi-selected tasks.
+func (m DetailModel) SelectionCount() int { return len(m.selected) }
+
+// SelectedTIDs returns the multi-selected task ids, ascending.
+func (m DetailModel) SelectedTIDs() []int {
+	out := make([]int, 0, len(m.selected))
+	for tid := range m.selected {
+		out = append(out, tid)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// ClearSelection drops the multi-selection.
+func (m DetailModel) ClearSelection() DetailModel {
+	m.selected = make(map[int]bool)
+	return m
+}
+
 // SelectedTID returns the task id of the highlighted row, or 0.
 func (m DetailModel) SelectedTID() int {
 	row := m.table.SelectedRow()
@@ -489,8 +527,12 @@ func (m DetailModel) renderHeader() string {
 	} else {
 		title += fmt.Sprintf("  (%d tasks)", len(m.tasks))
 	}
+	if n := len(m.selected); n > 0 {
+		title += lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).
+			Render(fmt.Sprintf("  ✓ %d selected", n))
+	}
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-		Render("   [Esc] back  [/] search  [1-7] sort  [R] refresh")
+		Render("   [Esc] back  [/] search  [1-7] sort  [Spc] select  [R] refresh")
 	return styles.Title.Render(title) + hint
 }
 
@@ -524,8 +566,15 @@ func (m DetailModel) colorizeTasks(tableStr string) string {
 		if idx == m.table.Cursor() {
 			continue // selected row keeps the bubbles highlight
 		}
-		if ansi := statusANSI(m.tasks[idx].State); ansi != "" {
-			lines[i] = "\x1b[" + ansi + "m" + lines[i] + "\x1b[m"
+		sgr := statusANSI(m.tasks[idx].State)
+		if m.selected[m.tasks[idx].TID] {
+			if sgr != "" {
+				sgr += ";"
+			}
+			sgr += "48;5;23" // dark teal background for selected rows
+		}
+		if sgr != "" {
+			lines[i] = "\x1b[" + sgr + "m" + lines[i] + "\x1b[m"
 		}
 	}
 	return strings.Join(lines, "\n")

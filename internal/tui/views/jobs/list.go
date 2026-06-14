@@ -68,6 +68,8 @@ type ListModel struct {
 	myJobs    bool          // 'm' toggle — pre-fill owner filter
 	errOnly   bool          // 'e' toggle — local-filter to error jobs
 
+	selected map[int]bool // multi-selected JIDs for bulk actions
+
 	sortCol int  // column index; default colJID
 	sortAsc bool // ascending; default false (newest JIDs first)
 
@@ -96,6 +98,7 @@ func New(client *api.Client, cfg *config.Config) ListModel {
 		table:     newTable(),
 		spinner:   sp,
 		filterBar: filter.New(),
+		selected:  make(map[int]bool),
 		client:    client,
 		cfg:       cfg,
 		sortCol:   colJID,
@@ -244,6 +247,28 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			m.table.SetColumns(m.makeColumns())
 			m.table.SetRows(m.buildRows())
 			return m, nil
+		case " ", "space":
+			// Toggle multi-selection on the highlighted job.
+			if jid := m.SelectedJID(); jid > 0 {
+				if m.selected[jid] {
+					delete(m.selected, jid)
+				} else {
+					m.selected[jid] = true
+				}
+			}
+			return m, nil
+		case "A":
+			// Select all currently visible jobs.
+			for _, j := range m.jobs {
+				m.selected[j.JID] = true
+			}
+			return m, nil
+		case "esc":
+			// Clear the multi-selection.
+			if len(m.selected) > 0 {
+				m.selected = make(map[int]bool)
+			}
+			return m, nil
 		}
 	}
 
@@ -384,6 +409,25 @@ func (m ListModel) SelectJID(jid int) ListModel {
 // SelectedJob returns the job under the cursor (exported wrapper).
 func (m ListModel) SelectedJob() (models.Job, bool) { return m.selectedJob() }
 
+// SelectionCount returns the number of multi-selected jobs.
+func (m ListModel) SelectionCount() int { return len(m.selected) }
+
+// SelectedJIDs returns the multi-selected job ids, ascending.
+func (m ListModel) SelectedJIDs() []int {
+	out := make([]int, 0, len(m.selected))
+	for jid := range m.selected {
+		out = append(out, jid)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// ClearSelection drops the multi-selection.
+func (m ListModel) ClearSelection() ListModel {
+	m.selected = make(map[int]bool)
+	return m
+}
+
 // JobByJID returns the job with the given id, if present.
 func (m ListModel) JobByJID(jid int) (models.Job, bool) {
 	for _, j := range m.jobs {
@@ -505,7 +549,7 @@ func (m ListModel) colorizeTable(tableStr string) string {
 		if jobIdx == m.table.Cursor() {
 			continue // selected row keeps the purple s.Selected highlight
 		}
-		lines[i] = m.colorizeLine(lines[i], m.jobs[jobIdx])
+		lines[i] = m.colorizeLine(lines[i], m.jobs[jobIdx], m.selected[m.jobs[jobIdx].JID])
 	}
 	return strings.Join(lines, "\n")
 }
@@ -513,9 +557,15 @@ func (m ListModel) colorizeTable(tableStr string) string {
 // colorizeLine tints a single plain-text data line. It locates the progress bar
 // (the first run of block glyphs, which sits right after the numeric JID),
 // replaces it with the coloured bar, and wraps the surrounding text in the
-// job's status colour.
-func (m ListModel) colorizeLine(line string, job models.Job) string {
-	status := statusANSI(job.Status)
+// job's status colour (plus a background when multi-selected).
+func (m ListModel) colorizeLine(line string, job models.Job, selected bool) string {
+	sgr := statusANSI(job.Status)
+	if selected {
+		if sgr != "" {
+			sgr += ";"
+		}
+		sgr += "48;5;23" // dark teal background for selected rows
+	}
 	runes := []rune(line)
 
 	barStart := -1
@@ -527,10 +577,10 @@ func (m ListModel) colorizeLine(line string, job models.Job) string {
 	}
 	if barStart < 0 {
 		// No bar found (e.g. empty table); tint the whole line.
-		if status == "" {
+		if sgr == "" {
 			return line
 		}
-		return "\x1b[" + status + "m" + line + "\x1b[m"
+		return "\x1b[" + sgr + "m" + line + "\x1b[m"
 	}
 
 	barEnd := barStart + progressBarWidth
@@ -542,10 +592,10 @@ func (m ListModel) colorizeLine(line string, job models.Job) string {
 	bar := progressBarColored(job, progressBarWidth)
 
 	wrap := func(s string) string {
-		if s == "" || status == "" {
+		if s == "" || sgr == "" {
 			return s
 		}
-		return "\x1b[" + status + "m" + s + "\x1b[m"
+		return "\x1b[" + sgr + "m" + s + "\x1b[m"
 	}
 	return wrap(prefix) + bar + wrap(suffix)
 }
@@ -606,6 +656,10 @@ func (m ListModel) renderHeader() string {
 	}
 	if m.loading {
 		title += "  " + m.spinner.View()
+	}
+	if n := len(m.selected); n > 0 {
+		title += lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).
+			Render(fmt.Sprintf("  ✓ %d selected", n))
 	}
 
 	var tags []string

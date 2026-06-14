@@ -110,9 +110,11 @@ value-input step and a confirmation step for destructive actions.
 - [x] Mapped to engine `q=queue` operations (verified against `EngineClient.py`).
 - [x] Result + errors surfaced in the status bar; active view refreshes after.
 - [ ] Delay / undelay and lock / unlock.
+- [x] Multi-select / bulk actions: Space toggles a row, A selects all, Esc
+      clears; `a` then applies the chosen op across the whole selection and
+      reports an aggregate result.
 - [ ] Permission/ownership awareness (currently relies on the engine to reject;
       we surface its error).
-- [ ] Multi-select / bulk actions across several jobs or tasks.
 
 ## Phase 5 — Blades view ✅
 

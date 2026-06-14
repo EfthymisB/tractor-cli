@@ -112,14 +112,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.actionMsg = "✓ " + msg.op + " — " + msg.label
 		}
-		// Reflect the change by refreshing the active view.
+		// Reflect the change by refreshing the active view, and clear any
+		// multi-selection (the bulk action consumed it).
 		var refresh tea.Cmd
 		switch m.activeView {
 		case ViewJobDetail:
+			m.detail = m.detail.ClearSelection()
 			m.detail, refresh = m.detail.Refresh()
 		case ViewBladesList:
 			m.blades, refresh = m.blades.Refresh()
 		default:
+			m.jobsList = m.jobsList.ClearSelection()
 			m.jobsList, refresh = m.jobsList.Refresh()
 		}
 		return m, refresh
@@ -243,12 +246,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !capturing {
 				switch m.activeView {
 				case ViewJobsList:
+					if n := m.jobsList.SelectionCount(); n > 0 {
+						m.actionMenu = m.actionMenu.OpenJobsBulk(
+							m.jobsList.SelectedJIDs(), fmt.Sprintf("%d jobs", n))
+						return m, nil
+					}
 					if job, ok := m.jobsList.SelectedJob(); ok {
 						label := fmt.Sprintf("Job %d — %s", job.JID, job.Title)
 						m.actionMenu = m.actionMenu.OpenJob(job.JID, label, job.Status == "paused")
 						return m, nil
 					}
 				case ViewJobDetail:
+					if n := m.detail.SelectionCount(); n > 0 {
+						m.actionMenu = m.actionMenu.OpenTasksBulk(
+							m.detail.JID(), m.detail.SelectedTIDs(), fmt.Sprintf("%d tasks", n))
+						return m, nil
+					}
 					if tid := m.detail.SelectedTID(); tid > 0 {
 						label := fmt.Sprintf("Task %d (Job %d)", tid, m.detail.JID())
 						m.actionMenu = m.actionMenu.OpenTask(m.detail.JID(), tid, label)
@@ -272,6 +285,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.detail, cmd = m.detail.RefreshPanel()
 					return m, cmd
 				case ViewJobDetail:
+					// Clear a task selection first; otherwise go back.
+					if m.detail.SelectionCount() > 0 {
+						m.detail = m.detail.ClearSelection()
+						return m, nil
+					}
 					m.activeView = ViewJobsList
 					return m, nil
 				case ViewBladesList:
@@ -405,7 +423,8 @@ func (m Model) renderHelp() string {
 		row("c", "Clear all filters"),
 		row("m", "Toggle my jobs"),
 		row("e", "Toggle errors only"),
-		row("a", "Actions menu (job/task)"),
+		row("Space / A", "Select row / all (for bulk)"),
+		row("a", "Actions (selection if any, else row)"),
 		row("b", "Blades view"),
 		row("R", "Refresh now"),
 	) + "\n\n")
@@ -417,7 +436,8 @@ func (m Model) renderHelp() string {
 		row("/", "Search by title"),
 		row("1 – 7", "Sort by column"),
 		row("[ / ]", "Previous / next job's tasks"),
-		row("a", "Actions menu (task)"),
+		row("Space / A", "Select task / all (for bulk)"),
+		row("a", "Actions (selection if any, else task)"),
 		row("Enter", "Open the task's log"),
 		row("R", "Refresh tasks"),
 	) + "\n\n")
@@ -535,58 +555,111 @@ type actionDoneMsg struct {
 	err   error
 }
 
-// runAction maps a chosen action to the corresponding API call, run async.
+// runAction maps a chosen action to the corresponding API call(s), run async.
+// Bulk targets apply the same op to every selected job/task and report an
+// aggregate result.
 func (m Model) runAction(c action.ChosenMsg) tea.Cmd {
 	client := m.client
 	t := c.Target
 	op := c.Op
 	val := c.Value
 	return func() tea.Msg {
-		var err error
-		switch op {
-		case "pause":
-			err = client.PauseJob(t.JID)
-		case "unpause":
-			err = client.UnpauseJob(t.JID)
-		case "retry-errors":
-			err = client.RetryErroredTasks(t.JID)
-		case "retry-active":
-			err = client.RetryActiveTasks(t.JID)
-		case "skip-errors":
-			err = client.SkipErroredTasks(t.JID)
-		case "interrupt":
-			err = client.InterruptJob(t.JID)
-		case "restart":
-			err = client.RestartJob(t.JID)
-		case "delete":
-			err = client.DeleteJob(t.JID)
-		case "chpri":
-			p, perr := strconv.ParseFloat(val, 64)
-			if perr != nil {
-				err = fmt.Errorf("invalid priority %q", val)
-			} else {
-				err = client.SetJobPriority(t.JID, p)
+		if t.Bulk {
+			total, failed, firstErr := 0, 0, error(nil)
+			record := func(e error) {
+				total++
+				if e != nil {
+					failed++
+					if firstErr == nil {
+						firstErr = e
+					}
+				}
 			}
-		case "retry":
-			err = client.RetryTask(t.JID, t.TID)
-		case "resume":
-			err = client.ResumeTask(t.JID, t.TID)
-		case "skip":
-			err = client.SkipTask(t.JID, t.TID)
-		case "kill":
-			err = client.KillTask(t.JID, t.TID)
-		case "nimby":
-			err = client.NimbyBlade(t.Name, t.Addr)
-		case "unnimby":
-			err = client.UnnimbyBlade(t.Name, t.Addr)
-		case "eject":
-			err = client.EjectBlade(t.Name, t.Addr)
-		case "delist":
-			err = client.DelistBlade(t.Name, t.Addr)
-		default:
-			err = fmt.Errorf("unknown action %q", op)
+			switch t.Kind {
+			case "jobs":
+				for _, jid := range t.JIDs {
+					record(jobOpCall(client, op, jid, val))
+				}
+			case "tasks":
+				for _, tid := range t.TIDs {
+					record(taskOpCall(client, op, t.JID, tid))
+				}
+			}
+			label := fmt.Sprintf("%s on %d", op, total)
+			var err error
+			if failed > 0 {
+				err = fmt.Errorf("%d of %d failed (e.g. %v)", failed, total, firstErr)
+			}
+			return actionDoneMsg{op: op, label: label, err: err}
+		}
+
+		var err error
+		switch t.Kind {
+		case "blade":
+			switch op {
+			case "nimby":
+				err = client.NimbyBlade(t.Name, t.Addr)
+			case "unnimby":
+				err = client.UnnimbyBlade(t.Name, t.Addr)
+			case "eject":
+				err = client.EjectBlade(t.Name, t.Addr)
+			case "delist":
+				err = client.DelistBlade(t.Name, t.Addr)
+			default:
+				err = fmt.Errorf("unknown action %q", op)
+			}
+		case "task":
+			err = taskOpCall(client, op, t.JID, t.TID)
+		default: // job
+			err = jobOpCall(client, op, t.JID, val)
 		}
 		return actionDoneMsg{op: op, label: t.Label, err: err}
+	}
+}
+
+// jobOpCall runs a single job operation.
+func jobOpCall(client *api.Client, op string, jid int, val string) error {
+	switch op {
+	case "pause":
+		return client.PauseJob(jid)
+	case "unpause":
+		return client.UnpauseJob(jid)
+	case "retry-errors":
+		return client.RetryErroredTasks(jid)
+	case "retry-active":
+		return client.RetryActiveTasks(jid)
+	case "skip-errors":
+		return client.SkipErroredTasks(jid)
+	case "interrupt":
+		return client.InterruptJob(jid)
+	case "restart":
+		return client.RestartJob(jid)
+	case "delete":
+		return client.DeleteJob(jid)
+	case "chpri":
+		p, perr := strconv.ParseFloat(val, 64)
+		if perr != nil {
+			return fmt.Errorf("invalid priority %q", val)
+		}
+		return client.SetJobPriority(jid, p)
+	default:
+		return fmt.Errorf("unknown job action %q", op)
+	}
+}
+
+// taskOpCall runs a single task operation.
+func taskOpCall(client *api.Client, op string, jid, tid int) error {
+	switch op {
+	case "retry":
+		return client.RetryTask(jid, tid)
+	case "resume":
+		return client.ResumeTask(jid, tid)
+	case "skip":
+		return client.SkipTask(jid, tid)
+	case "kill":
+		return client.KillTask(jid, tid)
+	default:
+		return fmt.Errorf("unknown task action %q", op)
 	}
 }
 
