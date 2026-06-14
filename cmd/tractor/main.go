@@ -12,13 +12,17 @@ import (
 	"github.com/tractor-cli/tractor-cli/internal/tui"
 )
 
+// version is overridden at build time via -ldflags "-X main.version=…".
+var version = "dev"
+
 func main() {
 	var sanity bool
 	var raw bool
 
 	root := &cobra.Command{
-		Use:   "tractor",
-		Short: "Interactive TUI for Pixar Tractor render farm",
+		Use:     "tractor",
+		Short:   "Interactive TUI for Pixar Tractor render farm",
+		Version: version,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if raw {
 				return runRaw()

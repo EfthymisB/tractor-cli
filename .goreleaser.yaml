@@ -1,0 +1,46 @@
+# goreleaser configuration. Build snapshots locally with:
+#   goreleaser release --snapshot --clean
+# Tag and release with:
+#   git tag v0.1.0 && git push --tags && goreleaser release --clean
+version: 2
+
+project_name: tractor-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tractor
+    main: ./cmd/tractor
+    binary: tractor
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: tractor
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format: tar.gz
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

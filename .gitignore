@@ -17,3 +17,6 @@ dist/
 
 # Config with secrets (never commit)
 config.yaml
+
+# Vendored Tractor reference source (local only)
+tractor_source/

@@ -3,7 +3,7 @@
 An interactive terminal UI (Go + Bubble Tea) for Pixar's Tractor render farm.
 Developed on Windows, deployed on Linux (Alma 9).
 
-_Last updated: 2026-06-10 (after Phase 3)._
+_Last updated: 2026-06-10 (Phase 6 in progress)._
 
 ---
 
@@ -14,9 +14,9 @@ _Last updated: 2026-06-10 (after Phase 3)._
 | 1 | Foundation (config, API client, auth, models) | ✅ Done |
 | 2 | Jobs list view | ✅ Done |
 | 3 | Job detail + task list + task logs | ✅ Done |
-| 4 | Actions (retry / kill / delete / skip / pause …) | 🚧 In progress |
+| 4 | Actions (retry / kill / delete / skip / pause …) | ✅ Done |
 | 5 | Blades view | ✅ Done |
-| 6 | Polish & release | ⬜ Planned |
+| 6 | Polish & release | 🚧 In progress |
 
 ---
 
@@ -148,12 +148,14 @@ value-input step and a confirmation step for destructive actions.
 - [x] Mouse wheel scrolling.
 - [x] Blade heatmap grid (`g`).
 
-## Phase 6 — Polish & release ⬜
+## Phase 6 — Polish & release 🚧
 
-- [ ] README + usage docs; document config + `TRACTOR_PASSWORD` rule.
-- [ ] `goreleaser` builds; CI (build/test/lint).
-- [ ] Configurable keymap; consistent help.
-- [ ] Tests for API parsing and filter logic.
+- [x] README + usage docs (config, `TRACTOR_PASSWORD` rule, xclip/ldap deps, keys).
+- [x] `goreleaser` config (`.goreleaser.yaml`) + `Makefile` + `--version`.
+- [x] CI (GitHub Actions: gofmt report, vet, build, test).
+- [x] Unit tests for filter parsing, WHERE building, status/state decoding,
+      passwd/LDAP parsing, metadata/progress helpers.
+- [ ] Configurable keymap (currently fixed; documented via `?`).
 
 ---
 
