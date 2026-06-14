@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tractor-cli/tractor-cli/internal/models"
 )
@@ -91,7 +92,7 @@ type selectJobRow struct {
 	Title     string      `json:"title"`
 	Owner     string      `json:"owner"`
 	Priority  float64     `json:"priority"`
-	SpoolTime string      `json:"spooltime"` // full Postgres timestamp; first 19 chars match our parse format
+	SpoolTime interface{} `json:"spooltime"` // string timestamp or epoch number
 	SpoolHost string      `json:"spoolhost"`
 	NumActive int         `json:"numactive"`
 	NumDone   int         `json:"numdone"`
@@ -108,10 +109,7 @@ func (r selectJobRow) toJob() models.Job {
 	if r.PauseTime != nil {
 		paused = 1
 	}
-	spoolDate := r.SpoolTime
-	if len(spoolDate) >= 19 {
-		spoolDate = spoolDate[:19]
-	}
+	spoolDate := spoolTimeString(r.SpoolTime)
 	return models.Job{
 		JID:       r.JID,
 		Title:     r.Title,
@@ -127,6 +125,24 @@ func (r selectJobRow) toJob() models.Job {
 		NumError:  r.NumError,
 		NumActive: r.NumActive,
 	}
+}
+
+// spoolTimeString normalises a spooltime value (string timestamp or epoch
+// number) to the "2006-01-02 15:04:05" form the UI's formatTime parses.
+func spoolTimeString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		if len(t) >= 19 {
+			return t[:19]
+		}
+		return t
+	case float64:
+		if t <= 0 {
+			return ""
+		}
+		return time.Unix(int64(t), 0).Format("2006-01-02 15:04:05")
+	}
+	return ""
 }
 
 // deriveStatus maps Tractor's internal nTasks counts to a human-readable status.
@@ -195,44 +211,36 @@ func (c *Client) queryJobsList(filter JobFilter) ([]models.Job, error) {
 	return applyClientFilters(jobs, filter), nil
 }
 
-// queryJobsSelect uses q=select&table=Job for filtered queries with a high row
-// limit. This bypasses the engine's default q=jobs result cap.
-func (c *Client) queryJobsSelect(filter JobFilter) ([]models.Job, error) {
-	params := c.authenticatedParams()
-	params.Set("q", "select")
-	params.Set("table", "Job")
-	params.Set("limit", "25000")
-	params.Set("orderby", "jid desc")
+// selectJobColumns are the job-table columns fetched for filtered queries.
+const selectJobColumns = "jid,title,owner,priority,spooltime,spoolhost," +
+	"numactive,numdone,numtasks,numerror,projects,metadata,pausetime"
 
-	if where := buildSelectWhere(filter); where != "" {
-		params.Set("where", where)
+// queryJobsSelect runs a filtered job query via tractorselect over /Tractor/db,
+// which has no ~2500 result cap (unlike q=jobs). buildSelectWhere already emits
+// Tractor's natural-language WHERE syntax, which is exactly what tractorselect
+// expects.
+func (c *Client) queryJobsSelect(filter JobFilter) ([]models.Job, error) {
+	where := buildSelectWhere(filter)
+	if where == "" {
+		// No server-expressible criteria (e.g. projects-only): fall back.
+		return c.queryJobsList(filter)
 	}
 
-	b, err := c.get("/Tractor/monitor", params)
+	raw, err := c.tractorSelect("job", where, selectJobColumns, "jid desc")
 	if err != nil {
 		return nil, fmt.Errorf("queryJobsSelect: %w", err)
 	}
-
-	var resp struct {
-		RC   int            `json:"rc"`
-		Rows []selectJobRow `json:"rows"`
-	}
-	if err := json.Unmarshal(b, &resp); err != nil {
-		return nil, fmt.Errorf("queryJobsSelect: parsing response: %w", err)
-	}
-	if resp.RC != 0 {
-		return nil, fmt.Errorf("queryJobsSelect: engine returned rc=%d", resp.RC)
-	}
-	if resp.Rows == nil {
-		return nil, fmt.Errorf("queryJobsSelect: no rows field in response")
+	var rows []selectJobRow
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("queryJobsSelect: parsing rows: %w", err)
 	}
 
-	jobs := make([]models.Job, 0, len(resp.Rows))
-	for _, r := range resp.Rows {
+	jobs := make([]models.Job, 0, len(rows))
+	for _, r := range rows {
 		jobs = append(jobs, r.toJob())
 	}
-	// Projects filter is client-side only (array contains not easily expressed
-	// in Tractor's WHERE language).
+	// Projects filter is client-side only (array overlap isn't expressible in
+	// the WHERE language).
 	return applyClientFilters(jobs, filter), nil
 }
 
