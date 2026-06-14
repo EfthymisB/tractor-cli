@@ -238,6 +238,19 @@ func (c *Client) EjectBlade(name, addr string) error {
 	return parseRC(b)
 }
 
+// TraceBlade returns the engine's plain-text trace/diagnostics for a blade.
+func (c *Client) TraceBlade(name, addr string) (string, error) {
+	p := c.authenticatedParams()
+	p.Set("q", "tracer")
+	p.Set("t", bladeID(name, addr))
+	p.Set("fmt", "plain")
+	b, err := c.get("/Tractor/ctrl", p)
+	if err != nil {
+		return "", fmt.Errorf("TraceBlade: %w", err)
+	}
+	return string(b), nil
+}
+
 // DelistBlade removes a blade's entry from the engine database.
 func (c *Client) DelistBlade(name, addr string) error {
 	p := c.authenticatedParams()

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -61,6 +62,14 @@ type Model struct {
 	notesLoading bool
 	notesErr     error
 
+	// blade trace overlay
+	showTrace    bool
+	traceTitle   string
+	traceVP      viewport.Model
+	traceReady   bool
+	traceLoading bool
+	traceErr     error
+
 	width, height int
 }
 
@@ -105,12 +114,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logView = m.logView.SetSize(m.width, m.height-1)
 		m.blades = m.blades.SetSize(m.width, m.height-1)
 		m.bladeDetail = m.bladeDetail.SetSize(m.width, m.height-1)
+		if !m.traceReady {
+			m.traceVP = viewport.New(m.width, m.traceViewportHeight())
+			m.traceReady = true
+		} else {
+			m.traceVP.Width = m.width
+			m.traceVP.Height = m.traceViewportHeight()
+		}
 		return m, nil
 
 	case action.ChosenMsg:
 		return m, m.runAction(msg)
 
 	case action.CancelMsg:
+		return m, nil
+
+	case traceLoadedMsg:
+		m.traceLoading = false
+		m.traceErr = nil
+		if m.traceReady {
+			m.traceVP.SetContent(msg.text)
+			m.traceVP.GotoTop()
+		}
+		return m, nil
+
+	case traceErrMsg:
+		m.traceLoading = false
+		m.traceErr = msg.err
+		if m.traceReady {
+			m.traceVP.SetContent(styles.ErrorStyle.Render("Error: " + msg.err.Error()))
+		}
 		return m, nil
 
 	case notesLoadedMsg:
@@ -167,6 +200,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.showNotes = false
 			return m, nil
+		}
+
+		// The trace overlay is scrollable; Esc/q close it.
+		if m.showTrace {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "q":
+				m.showTrace = false
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.traceVP, cmd = m.traceVP.Update(msg)
+			return m, cmd
 		}
 
 		// The action menu is modal: route all keys to it while open.
@@ -285,6 +332,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.notesErr = nil
 					m.notesLoading = true
 					return m, m.fetchNotes(jid)
+				}
+			}
+		case "t":
+			// Show the engine's trace for the highlighted blade.
+			if !capturing && m.activeView == ViewBladesList {
+				if bl, ok := m.blades.SelectedBlade(); ok {
+					m.showTrace = true
+					m.traceTitle = bl.Name
+					m.traceLoading = true
+					m.traceErr = nil
+					if m.traceReady {
+						m.traceVP.SetContent("Loading…")
+						m.traceVP.GotoTop()
+					}
+					return m, m.fetchTrace(bl.Name, bl.Addr)
 				}
 			}
 		case "b":
@@ -433,6 +495,9 @@ func (m Model) View() string {
 	if m.showNotes {
 		return m.renderNotes() + "\n" + m.statusBar()
 	}
+	if m.showTrace {
+		return m.renderTrace() + "\n" + m.statusBar()
+	}
 	if m.actionMenu.Active() {
 		return m.actionMenu.View(m.width, m.height-1) + "\n" + m.statusBar()
 	}
@@ -503,6 +568,7 @@ func (m Model) renderHelp() string {
 		row("/", "Search by name"),
 		row("1 – 9", "Sort by column"),
 		row("Enter", "Show blade's running commands"),
+		row("t", "Trace (engine diagnostics)"),
 		row("a", "Actions menu (nimby/eject/delist)"),
 		row("Esc", "Back to jobs"),
 		row("R", "Refresh blades"),
@@ -604,6 +670,47 @@ func (m Model) statusBar() string {
 	return styles.StatusBar.Width(m.width).Render(
 		left + fmt.Sprintf("%*s", gap, "") + right,
 	)
+}
+
+// trace overlay messages
+type traceLoadedMsg struct{ text string }
+type traceErrMsg struct{ err error }
+
+func (m Model) fetchTrace(name, addr string) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		text, err := client.TraceBlade(name, addr)
+		if err != nil {
+			return traceErrMsg{err: err}
+		}
+		if text == "" {
+			text = "(no trace output)"
+		}
+		return traceLoadedMsg{text: text}
+	}
+}
+
+func (m Model) traceViewportHeight() int {
+	h := m.height - 2 // header + status bar
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+// renderTrace draws the blade trace overlay (a scrollable full-area view).
+func (m Model) renderTrace() string {
+	title := "Blade trace — " + m.traceTitle
+	if m.traceLoading {
+		title += "  " + m.spinner.View()
+	}
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+		Render("   [Esc] close   ↑/↓ PgUp/PgDn scroll")
+	header := styles.Title.Render(title) + hint
+	if !m.traceReady {
+		return header
+	}
+	return header + "\n" + m.traceVP.View()
 }
 
 // notes overlay messages

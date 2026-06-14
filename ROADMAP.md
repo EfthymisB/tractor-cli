@@ -132,7 +132,8 @@ value-input step and a confirmation step for destructive actions.
 - [x] Blade actions via `a`: nimby/unnimby, eject (confirm), delist (confirm).
 - [x] Blade detail view (Enter): the blade's running commands (`q=bladedetails`)
       — JID, TID, OWNER, SLOTS, STARTED, COMMAND; searchable and sortable.
-- [ ] Trace output (`q=tracer`).
+- [x] Trace output (`q=tracer`): `t` opens a scrollable overlay with the
+      engine's diagnostics for the highlighted blade.
 
 ## Phase 6 — Polish & release ⬜
 
