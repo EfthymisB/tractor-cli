@@ -431,8 +431,11 @@ func (m DetailModel) Err() error         { return m.err }
 // JobTitle returns the title of the job whose tasks are shown.
 func (m DetailModel) JobTitle() string { return m.jobTitle }
 
-// PanelCommand returns the highlighted task's command (from the info panel).
+// PanelCommand/PanelEnv/PanelService return the highlighted task's command,
+// env key and service key (from the info panel) for clipboard copy.
 func (m DetailModel) PanelCommand() string { return m.taskDetail.Command }
+func (m DetailModel) PanelEnv() string     { return m.taskDetail.EnvKey }
+func (m DetailModel) PanelService() string { return m.taskDetail.Service }
 
 // TitleForTID returns the title of the task with the given id, or "".
 func (m DetailModel) TitleForTID(tid int) string {

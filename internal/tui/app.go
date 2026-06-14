@@ -83,6 +83,12 @@ type Model struct {
 	loadNames      []string
 	loadCursor     int
 
+	// copy chooser overlay (task view)
+	showCopyMenu bool
+	copyLabels   []string
+	copyValues   []string
+	copyCursor   int
+
 	width, height int
 }
 
@@ -377,6 +383,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Copy chooser overlay (task view).
+		if m.showCopyMenu {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.showCopyMenu = false
+				return m, nil
+			case "up", "k":
+				if m.copyCursor > 0 {
+					m.copyCursor--
+				}
+				return m, nil
+			case "down", "j":
+				if m.copyCursor < len(m.copyLabels)-1 {
+					m.copyCursor++
+				}
+				return m, nil
+			case "1", "2", "3":
+				if i := int(msg.String()[0] - '1'); i >= 0 && i < len(m.copyValues) {
+					m.copyCursor = i
+					return m.copySelected()
+				}
+				return m, nil
+			case "enter":
+				return m.copySelected()
+			}
+			return m, nil
+		}
+
 		// The action menu is modal: route all keys to it while open.
 		if m.actionMenu.Active() {
 			if msg.String() == "ctrl+c" {
@@ -496,17 +532,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "y":
 			// Yank a context value to the clipboard (OSC 52 — works over SSH).
 			if !capturing {
+				// In the task view, offer a choice of what to copy.
+				if m.activeView == ViewJobDetail && m.detail.SelectedTID() > 0 {
+					m.copyLabels = []string{"Command", "Env", "Service key"}
+					m.copyValues = []string{
+						m.detail.PanelCommand(), m.detail.PanelEnv(), m.detail.PanelService(),
+					}
+					m.copyCursor = 0
+					m.showCopyMenu = true
+					return m, nil
+				}
 				text := ""
 				switch m.activeView {
 				case ViewJobsList:
 					if jid := m.jobsList.SelectedJID(); jid > 0 {
 						text = strconv.Itoa(jid)
-					}
-				case ViewJobDetail:
-					if cmd := m.detail.PanelCommand(); cmd != "" {
-						text = cmd
-					} else if tid := m.detail.SelectedTID(); tid > 0 {
-						text = fmt.Sprintf("%d/%d", m.detail.JID(), tid)
 					}
 				case ViewBladesList:
 					if bl, ok := m.blades.SelectedBlade(); ok {
@@ -516,13 +556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					text = m.bladeDetail.BladeName()
 				}
 				if text != "" {
-					m.actionErr = false
-					m.actionMsg = "copied: " + truncatePlain(text, 60)
-					if !hasClipboardTool() {
-						m.actionErr = true
-						m.actionMsg = "copied (OSC52) — install xclip if paste doesn't work: " + truncatePlain(text, 40)
-					}
-					return m, yankCmd(text)
+					return m.yank(text)
 				}
 			}
 		case "o":
@@ -728,6 +762,9 @@ func (m Model) View() string {
 	if m.showLoadFilter {
 		return m.renderLoadFilter() + "\n" + m.statusBar()
 	}
+	if m.showCopyMenu {
+		return m.renderCopyMenu() + "\n" + m.statusBar()
+	}
 	if m.actionMenu.Active() {
 		return m.actionMenu.View(m.width, m.height-1) + "\n" + m.statusBar()
 	}
@@ -795,6 +832,7 @@ func (m Model) renderHelp() string {
 		row("1 – 7", "Sort by column"),
 		row("[ / ]", "Previous / next job's tasks"),
 		row("Space / A", "Select task / all (for bulk)"),
+		row("y", "Copy command / env / service key"),
 		row("a", "Actions (selection if any, else task)"),
 		row("Enter", "Open the task's log"),
 		row("R", "Refresh tasks"),
@@ -1228,6 +1266,61 @@ func yankCmd(text string) tea.Cmd {
 		copyToClipboard(text)
 		return nil
 	}
+}
+
+// yank sets the status banner and returns the clipboard-copy command.
+func (m Model) yank(text string) (tea.Model, tea.Cmd) {
+	m.actionErr = false
+	m.actionMsg = "copied: " + truncatePlain(text, 60)
+	if !hasClipboardTool() {
+		m.actionErr = true
+		m.actionMsg = "copied (OSC52) — install xclip if paste doesn't work: " + truncatePlain(text, 40)
+	}
+	return m, yankCmd(text)
+}
+
+// copySelected copies the highlighted item from the copy chooser.
+func (m Model) copySelected() (tea.Model, tea.Cmd) {
+	m.showCopyMenu = false
+	val := ""
+	if m.copyCursor >= 0 && m.copyCursor < len(m.copyValues) {
+		val = m.copyValues[m.copyCursor]
+	}
+	if val == "" {
+		m.actionErr = true
+		m.actionMsg = "nothing to copy (empty)"
+		return m, nil
+	}
+	return m.yank(val)
+}
+
+func (m Model) renderCopyMenu() string {
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).
+		Render("Copy to clipboard") + "\n\n")
+	for i, label := range m.copyLabels {
+		cursor := "  "
+		st := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+		if i == m.copyCursor {
+			cursor = "› "
+			st = st.Bold(true).Background(lipgloss.Color("236"))
+		}
+		preview := ""
+		if i < len(m.copyValues) {
+			preview = m.copyValues[i]
+		}
+		if preview == "" {
+			preview = "—"
+		}
+		line := fmt.Sprintf("%s  %s", label, truncatePlain(preview, 50))
+		b.WriteString(cursor + st.Render(line) + "\n")
+	}
+	b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+		Render("1-3 / Enter copy   Esc cancel"))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("86")).
+		Padding(1, 3).Width(64).Render(b.String())
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, box)
 }
 
 // clipboardTools are the local clipboard helpers we try, in order.
