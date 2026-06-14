@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/tractor-cli/tractor-cli/internal/api"
 	"github.com/tractor-cli/tractor-cli/internal/config"
 	"github.com/tractor-cli/tractor-cli/internal/tui/styles"
+	"github.com/tractor-cli/tractor-cli/internal/tui/views/action"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/jobs"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/logview"
 )
@@ -33,16 +35,19 @@ const (
 type Model struct {
 	activeView View
 
-	jobsList jobs.ListModel
-	detail   jobs.DetailModel
-	logView  logview.Model
+	jobsList   jobs.ListModel
+	detail     jobs.DetailModel
+	logView    logview.Model
+	actionMenu action.Model
 
 	client *api.Client
 	cfg    *config.Config
 
 	spinner spinner.Model
 
-	showHelp bool
+	showHelp  bool
+	actionMsg string // last action result, shown in the status bar
+	actionErr bool
 
 	width, height int
 }
@@ -58,6 +63,7 @@ func New(client *api.Client, cfg *config.Config) Model {
 		jobsList:   jobs.New(client, cfg),
 		detail:     jobs.NewDetail(client, cfg),
 		logView:    logview.New(client, cfg),
+		actionMenu: action.New(),
 		client:     client,
 		cfg:        cfg,
 		spinner:    sp,
@@ -85,6 +91,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logView = m.logView.SetSize(m.width, m.height-1)
 		return m, nil
 
+	case action.ChosenMsg:
+		return m, m.runAction(msg)
+
+	case action.CancelMsg:
+		return m, nil
+
+	case actionDoneMsg:
+		m.actionErr = msg.err != nil
+		if msg.err != nil {
+			m.actionMsg = "✗ " + msg.op + ": " + msg.err.Error()
+		} else {
+			m.actionMsg = "✓ " + msg.op + " — " + msg.label
+		}
+		// Reflect the change by refreshing the active view.
+		var refresh tea.Cmd
+		if m.activeView == ViewJobDetail {
+			m.detail, refresh = m.detail.Refresh()
+		} else {
+			m.jobsList, refresh = m.jobsList.Refresh()
+		}
+		return m, refresh
+
 	case tea.KeyMsg:
 		// While the help overlay is up it owns the keyboard: any key dismisses
 		// it (ctrl+c still quits) and nothing reaches the list underneath.
@@ -94,6 +122,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.showHelp = false
 			return m, nil
+		}
+
+		// The action menu is modal: route all keys to it while open.
+		if m.actionMenu.Active() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			var cmd tea.Cmd
+			m.actionMenu, cmd = m.actionMenu.Update(msg)
+			return m, cmd
 		}
 
 		// A child view is "capturing" when it has a focused text input (the
@@ -173,6 +211,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+		case "a":
+			// Open the action menu for the current job (list) or task (detail).
+			if !capturing {
+				switch m.activeView {
+				case ViewJobsList:
+					if job, ok := m.jobsList.SelectedJob(); ok {
+						label := fmt.Sprintf("Job %d — %s", job.JID, job.Title)
+						m.actionMenu = m.actionMenu.OpenJob(job.JID, label, job.Status == "paused")
+						return m, nil
+					}
+				case ViewJobDetail:
+					if tid := m.detail.SelectedTID(); tid > 0 {
+						label := fmt.Sprintf("Task %d (Job %d)", tid, m.detail.JID())
+						m.actionMenu = m.actionMenu.OpenTask(m.detail.JID(), tid, label)
+						return m, nil
+					}
+				}
+			}
 		case "esc":
 			// Walk back one view level, unless a search box is open (the view
 			// handles Esc itself to clear its search).
@@ -245,6 +301,9 @@ func (m Model) View() string {
 	if m.showHelp {
 		return m.renderHelp() + "\n" + m.statusBar()
 	}
+	if m.actionMenu.Active() {
+		return m.actionMenu.View(m.width, m.height-1) + "\n" + m.statusBar()
+	}
 	var body string
 	switch m.activeView {
 	case ViewTaskLog:
@@ -285,6 +344,7 @@ func (m Model) renderHelp() string {
 		row("c", "Clear all filters"),
 		row("m", "Toggle my jobs"),
 		row("e", "Toggle errors only"),
+		row("a", "Actions menu (job/task)"),
 		row("R", "Refresh now"),
 	) + "\n\n")
 	b.WriteString(section("Columns",
@@ -295,6 +355,7 @@ func (m Model) renderHelp() string {
 		row("/", "Search by title"),
 		row("1 – 7", "Sort by column"),
 		row("[ / ]", "Previous / next job's tasks"),
+		row("a", "Actions menu (task)"),
 		row("Enter", "Open the task's log"),
 		row("R", "Refresh tasks"),
 	) + "\n\n")
@@ -365,6 +426,14 @@ func (m Model) statusBar() string {
 		left = " " + styles.ErrorStyle.Render("✗ "+err.Error())
 	}
 
+	if m.actionMsg != "" {
+		st := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+		if m.actionErr {
+			st = styles.ErrorStyle
+		}
+		left += "  │  " + st.Render(m.actionMsg)
+	}
+
 	right := " [?] help  [q] quit "
 	if m.activeView != ViewJobsList {
 		right = " [Esc] back  [?] help  [q] quit "
@@ -377,6 +446,60 @@ func (m Model) statusBar() string {
 	return styles.StatusBar.Width(m.width).Render(
 		left + fmt.Sprintf("%*s", gap, "") + right,
 	)
+}
+
+// actionDoneMsg reports the outcome of an action invoked from the menu.
+type actionDoneMsg struct {
+	op    string
+	label string
+	err   error
+}
+
+// runAction maps a chosen action to the corresponding API call, run async.
+func (m Model) runAction(c action.ChosenMsg) tea.Cmd {
+	client := m.client
+	t := c.Target
+	op := c.Op
+	val := c.Value
+	return func() tea.Msg {
+		var err error
+		switch op {
+		case "pause":
+			err = client.PauseJob(t.JID)
+		case "unpause":
+			err = client.UnpauseJob(t.JID)
+		case "retry-errors":
+			err = client.RetryErroredTasks(t.JID)
+		case "retry-active":
+			err = client.RetryActiveTasks(t.JID)
+		case "skip-errors":
+			err = client.SkipErroredTasks(t.JID)
+		case "interrupt":
+			err = client.InterruptJob(t.JID)
+		case "restart":
+			err = client.RestartJob(t.JID)
+		case "delete":
+			err = client.DeleteJob(t.JID)
+		case "chpri":
+			p, perr := strconv.ParseFloat(val, 64)
+			if perr != nil {
+				err = fmt.Errorf("invalid priority %q", val)
+			} else {
+				err = client.SetJobPriority(t.JID, p)
+			}
+		case "retry":
+			err = client.RetryTask(t.JID, t.TID)
+		case "resume":
+			err = client.ResumeTask(t.JID, t.TID)
+		case "skip":
+			err = client.SkipTask(t.JID, t.TID)
+		case "kill":
+			err = client.KillTask(t.JID, t.TID)
+		default:
+			err = fmt.Errorf("unknown action %q", op)
+		}
+		return actionDoneMsg{op: op, label: t.Label, err: err}
+	}
 }
 
 // parenTitle wraps a non-empty title in parentheses for the status bar.

@@ -14,7 +14,7 @@ _Last updated: 2026-06-10 (after Phase 3)._
 | 1 | Foundation (config, API client, auth, models) | ✅ Done |
 | 2 | Jobs list view | ✅ Done |
 | 3 | Job detail + task list + task logs | ✅ Done |
-| 4 | Actions (retry / kill / delete / skip / pause …) | ⏭️ Next |
+| 4 | Actions (retry / kill / delete / skip / pause …) | 🚧 In progress |
 | 5 | Blades view | ⬜ Planned |
 | 6 | Polish & release | ⬜ Planned |
 
@@ -98,19 +98,21 @@ _Last updated: 2026-06-10 (after Phase 3)._
 
 ---
 
-## Phase 4 — Actions ⏭️ (next)
+## Phase 4 — Actions 🚧 (in progress)
 
-Mutating operations on jobs and tasks, with confirmation.
+Mutating operations on jobs and tasks, via an `a` action menu with an optional
+value-input step and a confirmation step for destructive actions.
 
-- [ ] Job actions: retry, kill/interrupt, restart, pause/unpause, delete,
-      delay/undelay, change priority.
-- [ ] Task actions: retry, resume, skip, kill.
-- [ ] "Retry/skip all errors" on a job.
-- [ ] Confirmation dialog component (esp. for destructive actions).
-- [ ] Permission/ownership awareness (acting on others' jobs).
-- [ ] Map to the engine's `q=queue`/control endpoints; verify against
-      `EngineClient.py` operations.
-- [ ] Optimistic UI + refresh after an action; surface engine errors clearly.
+- [x] Action menu component (`internal/tui/views/action`) + confirmation.
+- [x] Job actions: pause/unpause, retry errored, retry active, skip errored,
+      interrupt, restart, delete, change priority.
+- [x] Task actions: retry, resume, skip, kill.
+- [x] Mapped to engine `q=queue` operations (verified against `EngineClient.py`).
+- [x] Result + errors surfaced in the status bar; active view refreshes after.
+- [ ] Delay / undelay and lock / unlock.
+- [ ] Permission/ownership awareness (currently relies on the engine to reject;
+      we surface its error).
+- [ ] Multi-select / bulk actions across several jobs or tasks.
 
 ## Phase 5 — Blades view ⬜
 

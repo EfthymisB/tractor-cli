@@ -381,6 +381,9 @@ func (m ListModel) SelectJID(jid int) ListModel {
 	return m
 }
 
+// SelectedJob returns the job under the cursor (exported wrapper).
+func (m ListModel) SelectedJob() (models.Job, bool) { return m.selectedJob() }
+
 // JobByJID returns the job with the given id, if present.
 func (m ListModel) JobByJID(jid int) (models.Job, bool) {
 	for _, j := range m.jobs {
