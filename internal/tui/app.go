@@ -634,6 +634,7 @@ func (m Model) renderHelp() string {
 	b.WriteString(section("Columns",
 		row("1 – 9", "Sort by column (press again to reverse)"),
 		row("< / >", "Shrink / grow TITLE column"),
+		row("T", "Toggle SPOOLED absolute / relative"),
 	) + "\n\n")
 	b.WriteString(section("Tasks view",
 		row("/", "Search by title"),

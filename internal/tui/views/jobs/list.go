@@ -84,6 +84,7 @@ type ListModel struct {
 
 	sortCol int  // column index; default colJID
 	sortAsc bool // ascending; default false (newest JIDs first)
+	relTime bool // 'T' — show SPOOLED as relative age
 
 	// titleWidth overrides the TITLE column content width when > 0; when 0 the
 	// TITLE column auto-fills the remaining terminal width. Adjusted by the
@@ -279,6 +280,12 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			for _, j := range m.jobs {
 				m.selected[j.JID] = true
 			}
+			return m, nil
+		case "T":
+			// Toggle SPOOLED between absolute and relative time.
+			m.relTime = !m.relTime
+			m.table.SetColumns(m.makeColumns())
+			m.table.SetRows(m.buildRows())
 			return m, nil
 		case "w":
 			// Toggle watch on the highlighted job (notify when it finishes).
@@ -655,7 +662,7 @@ func (m ListModel) buildRows() []table.Row {
 			strconv.Itoa(j.NumDone),
 			strconv.Itoa(j.NumTasks),
 			fmt.Sprintf("%.0f", j.Priority),
-			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
+			m.spooledCell(j),
 			j.Projects,
 			j.SpoolHost,
 			m.flagCell(j),
@@ -895,7 +902,7 @@ func (m ListModel) columnContentWidths() [numCols]int {
 			strconv.Itoa(j.NumDone),
 			strconv.Itoa(j.NumTasks),
 			fmt.Sprintf("%.0f", j.Priority),
-			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
+			m.spooledCell(j),
 			j.Projects,
 			j.SpoolHost,
 			m.flagCell(j),
@@ -1188,6 +1195,36 @@ func countCell(n int) string {
 		return ""
 	}
 	return strconv.Itoa(n)
+}
+
+// spooledCell renders the SPOOLED column, relative or absolute per the toggle.
+func (m ListModel) spooledCell(j models.Job) string {
+	if m.relTime {
+		return relativeAge(j.SpoolTime)
+	}
+	return formatTime(j.SpoolTime, m.cfg.UI.DateFormat)
+}
+
+// relativeAge renders a Tractor spooldate as a compact age (now/Xm/Xh/Xd).
+func relativeAge(spool string) string {
+	if spool == "" {
+		return ""
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", spool, time.Local)
+	if err != nil {
+		return spool
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // formatTime parses Tractor's "2006-01-02 15:04:05" spooldate and reformats it.
