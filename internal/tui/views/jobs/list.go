@@ -72,7 +72,8 @@ type ListModel struct {
 	myJobs    bool          // 'm' toggle — pre-fill owner filter
 	errOnly   bool          // 'e' toggle — local-filter to error jobs
 
-	selected map[int]bool // multi-selected JIDs for bulk actions
+	selected map[int]bool   // multi-selected JIDs for bulk actions
+	watched  map[int]string // watched JID -> last seen status (for notifications)
 
 	// farm-wide stats for the summary line (pushed in by the root model)
 	farmSlotsInUse  int
@@ -110,6 +111,7 @@ func New(client *api.Client, cfg *config.Config) ListModel {
 		spinner:   sp,
 		filterBar: filter.New(),
 		selected:  make(map[int]bool),
+		watched:   make(map[int]string),
 		client:    client,
 		cfg:       cfg,
 		sortCol:   colJID,
@@ -180,6 +182,10 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 		// works even when getent passwd cannot enumerate LDAP.
 		m.filterBar = m.filterBar.AddUsernames(distinctOwners(msg.jobs))
 		m.filterBar = m.filterBar.AddProjects(distinctProjects(msg.jobs))
+		// Notify on watched jobs reaching a terminal state.
+		if watchCmds := m.checkWatched(msg.jobs); len(watchCmds) > 0 {
+			cmds = append(cmds, watchCmds...)
+		}
 
 	case fetchErrMsg:
 		m.loading = false
@@ -272,6 +278,16 @@ func (m ListModel) Update(msg tea.Msg) (ListModel, tea.Cmd) {
 			// Select all currently visible jobs.
 			for _, j := range m.jobs {
 				m.selected[j.JID] = true
+			}
+			return m, nil
+		case "w":
+			// Toggle watch on the highlighted job (notify when it finishes).
+			if job, ok := m.selectedJob(); ok {
+				if _, ok := m.watched[job.JID]; ok {
+					delete(m.watched, job.JID)
+				} else {
+					m.watched[job.JID] = job.Status
+				}
 			}
 			return m, nil
 		case "esc":
@@ -642,7 +658,7 @@ func (m ListModel) buildRows() []table.Row {
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
 			j.SpoolHost,
-			flagCell(j),
+			m.flagCell(j),
 		})
 	}
 	return rows
@@ -882,7 +898,7 @@ func (m ListModel) columnContentWidths() [numCols]int {
 			formatTime(j.SpoolTime, m.cfg.UI.DateFormat),
 			j.Projects,
 			j.SpoolHost,
-			flagCell(j),
+			m.flagCell(j),
 		}
 		for col, cell := range cells {
 			if col == colTitle {
@@ -1112,9 +1128,12 @@ func distinctProjects(jobs []models.Job) []string {
 	return out
 }
 
-// flagCell renders the FLG column: L for locked, N when the job has notes.
-func flagCell(j models.Job) string {
+// flagCell renders the FLG column: W watched, L locked, N has notes.
+func (m ListModel) flagCell(j models.Job) string {
 	flag := ""
+	if _, ok := m.watched[j.JID]; ok {
+		flag += "W"
+	}
 	if j.Locked {
 		flag += "L"
 	}
@@ -1122,6 +1141,44 @@ func flagCell(j models.Job) string {
 		flag += "N"
 	}
 	return flag
+}
+
+// WatchMsg is emitted when a watched job reaches a terminal state.
+type WatchMsg struct {
+	JID    int
+	Status string // "done" or "error"
+	Title  string
+}
+
+func isTerminalStatus(s string) bool { return s == "done" || s == "error" }
+
+// checkWatched compares watched jobs against a fresh fetch and emits a WatchMsg
+// for any that have reached a terminal state.
+func (m ListModel) checkWatched(jobs []models.Job) []tea.Cmd {
+	if len(m.watched) == 0 {
+		return nil
+	}
+	byJID := make(map[int]models.Job, len(jobs))
+	for _, j := range jobs {
+		byJID[j.JID] = j
+	}
+	var cmds []tea.Cmd
+	for jid, old := range m.watched {
+		j, ok := byJID[jid]
+		if !ok {
+			continue
+		}
+		if isTerminalStatus(j.Status) && !isTerminalStatus(old) {
+			status, title := j.Status, j.Title
+			cmds = append(cmds, func() tea.Msg {
+				return WatchMsg{JID: jid, Status: status, Title: title}
+			})
+			delete(m.watched, jid)
+		} else {
+			m.watched[jid] = j.Status
+		}
+	}
+	return cmds
 }
 
 // countCell renders a task-count cell, leaving it blank for zero so the ACT

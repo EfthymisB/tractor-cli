@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -161,6 +162,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.jobsList = m.jobsList.SetFarmStats(
 			msg.slotsInUse, msg.slotsTotal, msg.bladesUp, msg.bladesTotal)
 		return m, nil
+
+	case jobs.WatchMsg:
+		m.actionErr = msg.Status == "error"
+		verb := "✔ finished"
+		if msg.Status == "error" {
+			verb = "✗ errored"
+		}
+		m.actionMsg = fmt.Sprintf("watched job %d %s — %s", msg.JID, verb, msg.Title)
+		return m, bellCmd()
 
 	case traceLoadedMsg:
 		m.traceLoading = false
@@ -579,8 +589,9 @@ func (m Model) renderHelp() string {
 		row("m", "Toggle my jobs"),
 		row("e", "Toggle errors only"),
 		row("Space / A", "Select row / all (for bulk)"),
+		row("w", "Watch job (notify when it finishes)"),
 		row("a", "Actions (selection if any, else row)"),
-		row("n", "View notes (FLG column: L=lock N=note)"),
+		row("n", "View notes (FLG: W=watch L=lock N=note)"),
 		row("b", "Blades view"),
 		row("R", "Refresh now"),
 	) + "\n\n")
@@ -944,6 +955,14 @@ func parenTitle(s string) string {
 		return ""
 	}
 	return "(" + s + ")"
+}
+
+// bellCmd rings the terminal bell (used for watched-job notifications).
+func bellCmd() tea.Cmd {
+	return func() tea.Msg {
+		fmt.Fprint(os.Stderr, "\a")
+		return nil
+	}
 }
 
 func scheduleTick(d time.Duration) tea.Cmd {
