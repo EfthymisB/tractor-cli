@@ -518,6 +518,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if text != "" {
 					m.actionErr = false
 					m.actionMsg = "copied: " + truncatePlain(text, 60)
+					if !hasClipboardTool() {
+						m.actionErr = true
+						m.actionMsg = "copied (OSC52) — install xclip if paste doesn't work: " + truncatePlain(text, 40)
+					}
 					return m, yankCmd(text)
 				}
 			}
@@ -1226,6 +1230,24 @@ func yankCmd(text string) tea.Cmd {
 	}
 }
 
+// clipboardTools are the local clipboard helpers we try, in order.
+var clipboardTools = [][]string{
+	{"wl-copy"},
+	{"xclip", "-selection", "clipboard"},
+	{"xsel", "--clipboard", "--input"},
+	{"pbcopy"},
+}
+
+// hasClipboardTool reports whether any local clipboard helper is installed.
+func hasClipboardTool() bool {
+	for _, c := range clipboardTools {
+		if _, err := exec.LookPath(c[0]); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func copyToClipboard(text string) {
 	// OSC 52, written straight to the controlling terminal. Use the ST
 	// terminator (more widely accepted than BEL for OSC 52).
@@ -1241,13 +1263,9 @@ func copyToClipboard(text string) {
 	// Also write to stdout, in case /dev/tty isn't the terminal.
 	fmt.Fprint(os.Stdout, seq)
 
-	// Best-effort local clipboard tools (work without OSC 52 support).
-	for _, c := range [][]string{
-		{"wl-copy"},
-		{"xclip", "-selection", "clipboard"},
-		{"xsel", "--clipboard", "--input"},
-		{"pbcopy"},
-	} {
+	// Best-effort local clipboard tools (work without OSC 52 support — the
+	// reliable path on a local X11/Wayland desktop like MATE).
+	for _, c := range clipboardTools {
 		if _, err := exec.LookPath(c[0]); err != nil {
 			continue
 		}
