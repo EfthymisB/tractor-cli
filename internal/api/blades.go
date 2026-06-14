@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/tractor-cli/tractor-cli/internal/models"
 )
@@ -89,6 +90,52 @@ func (c *Client) QueryBlades() ([]models.Blade, error) {
 		blades = append(blades, r.toBlade())
 	}
 	return blades, nil
+}
+
+// BladeDetails returns the commands currently running on a blade (q=bladedetails).
+func (c *Client) BladeDetails(name string) ([]models.BladeCommand, error) {
+	p := c.authenticatedParams()
+	p.Set("q", "bladedetails")
+	p.Set("blade", name)
+
+	b, err := c.get("/Tractor/monitor", p)
+	if err != nil {
+		return nil, fmt.Errorf("BladeDetails: %w", err)
+	}
+
+	var resp struct {
+		RC   int    `json:"rc"`
+		Msg  string `json:"msg"`
+		Cmds []struct {
+			JID      int      `json:"jid"`
+			TID      int      `json:"tid"`
+			CID      int      `json:"cid"`
+			Owner    string   `json:"juser"`
+			Argv     []string `json:"argv"`
+			Start    float64  `json:"t"`
+			NumSlots int      `json:"numslots"`
+		} `json:"cmds"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return nil, fmt.Errorf("BladeDetails: parsing response: %w", err)
+	}
+	if resp.RC != 0 {
+		return nil, fmt.Errorf("BladeDetails: engine error (rc=%d): %s", resp.RC, resp.Msg)
+	}
+
+	cmds := make([]models.BladeCommand, 0, len(resp.Cmds))
+	for _, r := range resp.Cmds {
+		cmds = append(cmds, models.BladeCommand{
+			JID:       r.JID,
+			TID:       r.TID,
+			CID:       r.CID,
+			Owner:     r.Owner,
+			Command:   strings.Join(r.Argv, " "),
+			StartTime: r.Start,
+			NumSlots:  r.NumSlots,
+		})
+	}
+	return cmds, nil
 }
 
 // bladeID builds the "name/ipaddr" identifier the engine expects.

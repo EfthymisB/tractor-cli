@@ -30,6 +30,7 @@ const (
 	ViewJobDetail
 	ViewTaskLog
 	ViewBladesList
+	ViewBladeDetail
 )
 
 // Model is the root bubbletea model.
@@ -38,9 +39,10 @@ type Model struct {
 
 	jobsList   jobs.ListModel
 	detail     jobs.DetailModel
-	logView    logview.Model
-	blades     blades.Model
-	actionMenu action.Model
+	logView     logview.Model
+	blades      blades.Model
+	bladeDetail blades.DetailModel
+	actionMenu  action.Model
 
 	client *api.Client
 	cfg    *config.Config
@@ -64,9 +66,10 @@ func New(client *api.Client, cfg *config.Config) Model {
 		activeView: ViewJobsList,
 		jobsList:   jobs.New(client, cfg),
 		detail:     jobs.NewDetail(client, cfg),
-		logView:    logview.New(client, cfg),
-		blades:     blades.New(client, cfg),
-		actionMenu: action.New(),
+		logView:     logview.New(client, cfg),
+		blades:      blades.New(client, cfg),
+		bladeDetail: blades.NewDetail(client, cfg),
+		actionMenu:  action.New(),
 		client:     client,
 		cfg:        cfg,
 		spinner:    sp,
@@ -93,6 +96,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail = m.detail.SetSize(m.width, m.height-1)
 		m.logView = m.logView.SetSize(m.width, m.height-1)
 		m.blades = m.blades.SetSize(m.width, m.height-1)
+		m.bladeDetail = m.bladeDetail.SetSize(m.width, m.height-1)
 		return m, nil
 
 	case action.ChosenMsg:
@@ -184,6 +188,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.detail.JobTitle(), m.detail.TitleForTID(tid))
 					return m, cmd
 				}
+			case ViewBladesList:
+				// Open the highlighted blade's running commands.
+				if bl, ok := m.blades.SelectedBlade(); ok {
+					m.activeView = ViewBladeDetail
+					var cmd tea.Cmd
+					m.bladeDetail, cmd = m.bladeDetail.Load(bl.Name)
+					return m, cmd
+				}
 			}
 		case "]", "[":
 			// Jump to the next/previous sibling: task log in the log view,
@@ -265,6 +277,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case ViewBladesList:
 					m.activeView = ViewJobsList
 					return m, nil
+				case ViewBladeDetail:
+					m.activeView = ViewBladesList
+					return m, nil
 				}
 			}
 		}
@@ -277,6 +292,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detail, refreshCmd = m.detail.Refresh()
 		case ViewBladesList:
 			m.blades, refreshCmd = m.blades.Refresh()
+		case ViewBladeDetail:
+			m.bladeDetail, refreshCmd = m.bladeDetail.Refresh()
 		default:
 			m.jobsList, refreshCmd = m.jobsList.Refresh()
 		}
@@ -296,6 +313,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail, childCmd = m.detail.Update(msg)
 	case ViewBladesList:
 		m.blades, childCmd = m.blades.Update(msg)
+	case ViewBladeDetail:
+		m.bladeDetail, childCmd = m.bladeDetail.Update(msg)
 	default:
 		m.jobsList, childCmd = m.jobsList.Update(msg)
 	}
@@ -319,6 +338,8 @@ func (m Model) capturingInput() bool {
 		return m.detail.CapturingInput()
 	case ViewBladesList:
 		return m.blades.CapturingInput()
+	case ViewBladeDetail:
+		return m.bladeDetail.CapturingInput()
 	default:
 		return m.jobsList.CapturingInput()
 	}
@@ -348,6 +369,8 @@ func (m Model) View() string {
 		body = m.detail.View()
 	case ViewBladesList:
 		body = m.blades.View()
+	case ViewBladeDetail:
+		body = m.bladeDetail.View()
 	default:
 		body = m.jobsList.View()
 	}
@@ -401,6 +424,7 @@ func (m Model) renderHelp() string {
 	b.WriteString(section("Blades view",
 		row("/", "Search by name"),
 		row("1 – 9", "Sort by column"),
+		row("Enter", "Show blade's running commands"),
 		row("a", "Actions menu (nimby/eject/delist)"),
 		row("Esc", "Back to jobs"),
 		row("R", "Refresh blades"),
@@ -458,6 +482,11 @@ func (m Model) statusBar() string {
 			user, host, m.blades.BladeCount())
 		loading = m.blades.IsLoading()
 		err = m.blades.Err()
+	case ViewBladeDetail:
+		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Blade %s  │  Cmds: %d",
+			user, host, m.bladeDetail.BladeName(), m.bladeDetail.CmdCount())
+		loading = m.bladeDetail.IsLoading()
+		err = m.bladeDetail.Err()
 	default:
 		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Jobs: %d",
 			user, host, m.jobsList.JobCount())

@@ -124,7 +124,8 @@ value-input step and a confirmation step for destructive actions.
 - [x] Info panel: addr/port, OS, GPU, version, UDI, CPUs, heartbeat, uptime,
       note.
 - [x] Blade actions via `a`: nimby/unnimby, eject (confirm), delist (confirm).
-- [ ] Blade detail view with the blade's current tasks/commands (`q=bladedetails`).
+- [x] Blade detail view (Enter): the blade's running commands (`q=bladedetails`)
+      — JID, TID, OWNER, SLOTS, STARTED, COMMAND; searchable and sortable.
 - [ ] Trace output (`q=tracer`).
 
 ## Phase 6 — Polish & release ⬜
