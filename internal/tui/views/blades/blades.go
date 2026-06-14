@@ -61,6 +61,9 @@ type Model struct {
 	sortCol   int
 	sortAsc   bool
 
+	heatmap  bool // 'g' — show the blade heatmap grid
+	selIndex int  // selected cell in heatmap mode
+
 	loading     bool
 	lastRefresh time.Time
 	err         error
@@ -165,7 +168,34 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Heatmap-mode grid navigation.
+		if m.heatmap {
+			switch msg.String() {
+			case "left", "h":
+				m.selIndex--
+				return m.clampSel(), nil
+			case "right", "l":
+				m.selIndex++
+				return m.clampSel(), nil
+			case "up", "k":
+				m.selIndex -= m.heatCols()
+				return m.clampSel(), nil
+			case "down", "j":
+				m.selIndex += m.heatCols()
+				return m.clampSel(), nil
+			}
+		}
+
 		switch msg.String() {
+		case "g":
+			// Toggle the heatmap grid; keep the selection in sync.
+			m.heatmap = !m.heatmap
+			if m.heatmap {
+				m.selIndex = m.table.Cursor()
+			} else {
+				m.table.SetCursor(m.selIndex)
+			}
+			return m.clampSel(), nil
 		case "/":
 			m.searching = true
 			m.table.SetHeight(m.viewportHeight())
@@ -198,6 +228,18 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 // CapturingInput reports whether the name-search input is consuming keys.
 func (m Model) CapturingInput() bool { return m.searching }
 
+// Heatmap reports whether the heatmap grid is showing.
+func (m Model) Heatmap() bool { return m.heatmap }
+
+// ExitHeatmap switches back to the table view, syncing the cursor.
+func (m Model) ExitHeatmap() Model {
+	if m.heatmap {
+		m.heatmap = false
+		m.table.SetCursor(m.selIndex)
+	}
+	return m
+}
+
 // State accessors used by the root model.
 func (m Model) BladeCount() int          { return len(m.blades) }
 func (m Model) IsLoading() bool          { return m.loading }
@@ -207,22 +249,122 @@ func (m Model) Err() error               { return m.err }
 // SelectedBlade returns the highlighted blade, if any.
 func (m Model) SelectedBlade() (models.Blade, bool) {
 	c := m.table.Cursor()
+	if m.heatmap {
+		c = m.selIndex
+	}
 	if c < 0 || c >= len(m.blades) {
 		return models.Blade{}, false
 	}
 	return m.blades[c], true
 }
 
-// View renders the blades view.
+// View renders the blades view (table or heatmap).
 func (m Model) View() string {
 	if m.width == 0 {
 		return ""
+	}
+	if m.heatmap {
+		return m.renderHeatmap()
 	}
 	out := m.renderHeader() + "\n"
 	if m.searching {
 		out += styles.FilterBorder.Width(m.width-4).Render("Search name: "+m.search.View()) + "\n"
 	}
 	return out + m.colorize(m.table.View()) + "\n" + m.renderPanel()
+}
+
+func (m Model) clampSel() Model {
+	if m.selIndex < 0 {
+		m.selIndex = 0
+	}
+	if m.selIndex >= len(m.blades) {
+		m.selIndex = len(m.blades) - 1
+	}
+	if m.selIndex < 0 {
+		m.selIndex = 0
+	}
+	return m
+}
+
+func (m Model) heatCols() int {
+	c := m.width / 3 // each cell is "██" + a space
+	if c < 1 {
+		c = 1
+	}
+	return c
+}
+
+// renderHeatmap draws a grid of blades, one coloured cell each.
+func (m Model) renderHeatmap() string {
+	title := fmt.Sprintf("Blades — heatmap (%d)", len(m.blades))
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+		Render("   [g] grid/table  ←↑↓→ move  [Enter] detail  [a] actions  [t] trace  [Esc] back")
+	head := styles.Title.Render(title) + hint
+	if len(m.blades) == 0 {
+		return head + "\n\n(no blades)"
+	}
+
+	cols := m.heatCols()
+	var b strings.Builder
+	for i, bl := range m.blades {
+		b.WriteString(heatCell(bl, i == m.selIndex))
+		if (i+1)%cols == 0 {
+			b.WriteByte('\n')
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	var sel string
+	if m.selIndex >= 0 && m.selIndex < len(m.blades) {
+		bl := m.blades[m.selIndex]
+		pct := 0
+		if bl.NumSlots > 0 {
+			pct = bl.SlotsInUse * 100 / bl.NumSlots
+		}
+		sel = fmt.Sprintf("%s   %s   slots %d/%d (%d%%)   load %.2f   mem %.1f   %s",
+			bl.Name, bladeStatus(bl), bl.SlotsInUse, bl.NumSlots, pct, bl.LoadAvg, bl.MemGB, nimbyCell(bl))
+	}
+	cell := func(c string) string { return lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Render("██") }
+	legend := dim.Render("idle ") + cell("10") + dim.Render("  busy ") + cell("9") +
+		dim.Render("  nimby ") + cell("11") + dim.Render("  down ") + cell("240")
+
+	return head + "\n\n" + b.String() + "\n\n" + sel + "\n" + legend
+}
+
+// heatCell renders one blade as a coloured block (selected = reversed).
+func heatCell(b models.Blade, selected bool) string {
+	st := lipgloss.NewStyle().Foreground(lipgloss.Color(bladeHeatColor(b)))
+	if selected {
+		st = st.Reverse(true)
+	}
+	return st.Render("██")
+}
+
+// bladeHeatColor maps a blade to a heat colour: grey down, yellow nimby,
+// otherwise green→orange→red by slot utilisation.
+func bladeHeatColor(b models.Blade) string {
+	if !bladeUp(b) {
+		return "240"
+	}
+	if isNimbied(b) {
+		return "11"
+	}
+	pct := 0
+	if b.NumSlots > 0 {
+		pct = b.SlotsInUse * 100 / b.NumSlots
+	}
+	switch {
+	case pct < 34:
+		return "10" // green (idle)
+	case pct < 67:
+		return "11" // yellow
+	case pct < 90:
+		return "208" // orange
+	default:
+		return "9" // red (full)
+	}
 }
 
 // SetSize updates dimensions and resizes the table.

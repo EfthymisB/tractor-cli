@@ -507,6 +507,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeView = ViewJobsList
 					return m, nil
 				case ViewBladesList:
+					// Esc exits the heatmap first; otherwise back to jobs.
+					if m.blades.Heatmap() {
+						m.blades = m.blades.ExitHeatmap()
+						return m, nil
+					}
 					m.activeView = ViewJobsList
 					return m, nil
 				case ViewBladeDetail:
@@ -669,6 +674,7 @@ func (m Model) renderHelp() string {
 	b.WriteString(section("Blades view",
 		row("/", "Search by name"),
 		row("1 – 9", "Sort by column"),
+		row("g", "Toggle heatmap grid"),
 		row("Enter", "Show blade's running commands"),
 		row("t", "Trace (engine diagnostics)"),
 		row("a", "Actions menu (nimby/eject/delist)"),
