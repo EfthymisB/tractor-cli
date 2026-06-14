@@ -431,6 +431,9 @@ func (m DetailModel) Err() error         { return m.err }
 // JobTitle returns the title of the job whose tasks are shown.
 func (m DetailModel) JobTitle() string { return m.jobTitle }
 
+// PanelCommand returns the highlighted task's command (from the info panel).
+func (m DetailModel) PanelCommand() string { return m.taskDetail.Command }
+
 // TitleForTID returns the title of the task with the given id, or "".
 func (m DetailModel) TitleForTID(tid int) string {
 	for _, t := range m.tasks {

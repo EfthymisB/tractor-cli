@@ -112,6 +112,9 @@ func (m Model) fetch() tea.Cmd {
 // CapturingInput reports whether the search input is consuming keys.
 func (m Model) CapturingInput() bool { return m.searching }
 
+// RawText returns the full, unstyled log text.
+func (m Model) RawText() string { return strings.Join(m.lines, "\n") }
+
 // Accessors used by the root model's status bar.
 func (m Model) JID() int          { return m.jid }
 func (m Model) TID() int          { return m.tid }

@@ -2,8 +2,10 @@
 package tui
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -354,6 +356,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+		case "y":
+			// Yank a context value to the clipboard (OSC 52 — works over SSH).
+			if !capturing {
+				text := ""
+				switch m.activeView {
+				case ViewJobsList:
+					if jid := m.jobsList.SelectedJID(); jid > 0 {
+						text = strconv.Itoa(jid)
+					}
+				case ViewJobDetail:
+					if cmd := m.detail.PanelCommand(); cmd != "" {
+						text = cmd
+					} else if tid := m.detail.SelectedTID(); tid > 0 {
+						text = fmt.Sprintf("%d/%d", m.detail.JID(), tid)
+					}
+				case ViewBladesList:
+					if bl, ok := m.blades.SelectedBlade(); ok {
+						text = bl.Name
+					}
+				case ViewBladeDetail:
+					text = m.bladeDetail.BladeName()
+				}
+				if text != "" {
+					m.actionErr = false
+					m.actionMsg = "copied: " + truncatePlain(text, 60)
+					return m, yankCmd(text)
+				}
+			}
+		case "o":
+			// Open the current log in $PAGER.
+			if !capturing && m.activeView == ViewTaskLog {
+				return m, openInPager(m.logView.RawText())
+			}
 		case "n":
 			// Show the selected job's notes overlay.
 			if !capturing {
@@ -590,6 +625,7 @@ func (m Model) renderHelp() string {
 		row("e", "Toggle errors only"),
 		row("Space / A", "Select row / all (for bulk)"),
 		row("w", "Watch job (notify when it finishes)"),
+		row("y", "Copy id / command (clipboard)"),
 		row("a", "Actions (selection if any, else row)"),
 		row("n", "View notes (FLG: W=watch L=lock N=note)"),
 		row("b", "Blades view"),
@@ -622,6 +658,7 @@ func (m Model) renderHelp() string {
 		row("c", "Clear search"),
 		row("n / N", "Next / previous match"),
 		row("[ / ]", "Previous / next task's log"),
+		row("o", "Open log in $PAGER"),
 		row("w", "Toggle wrap / horizontal scroll"),
 		row("←/→", "Scroll horizontally (no-wrap)"),
 		row("g / G", "Top / bottom"),
@@ -963,6 +1000,48 @@ func bellCmd() tea.Cmd {
 		fmt.Fprint(os.Stderr, "\a")
 		return nil
 	}
+}
+
+// yankCmd copies text to the clipboard using an OSC 52 escape, which works
+// over SSH on terminals that support it.
+func yankCmd(text string) tea.Cmd {
+	return func() tea.Msg {
+		enc := base64.StdEncoding.EncodeToString([]byte(text))
+		fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", enc)
+		return nil
+	}
+}
+
+// openInPager writes text to a temp file and opens it in $PAGER (default
+// "less -R"), suspending the TUI until the pager exits.
+func openInPager(text string) tea.Cmd {
+	f, err := os.CreateTemp("", "tractor-log-*.txt")
+	if err != nil {
+		return nil
+	}
+	_, _ = f.WriteString(text)
+	_ = f.Close()
+
+	pager := os.Getenv("PAGER")
+	if pager == "" {
+		pager = "less -R"
+	}
+	parts := strings.Fields(pager)
+	args := append(parts[1:], f.Name())
+	c := exec.Command(parts[0], args...)
+	return tea.ExecProcess(c, func(error) tea.Msg {
+		_ = os.Remove(f.Name())
+		return nil
+	})
+}
+
+// truncatePlain truncates a plain string to n runes with an ellipsis.
+func truncatePlain(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func scheduleTick(d time.Duration) tea.Cmd {
