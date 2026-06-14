@@ -1305,21 +1305,13 @@ func (m Model) renderCopyMenu() string {
 			cursor = "› "
 			st = st.Bold(true).Background(lipgloss.Color("236"))
 		}
-		preview := ""
-		if i < len(m.copyValues) {
-			preview = m.copyValues[i]
-		}
-		if preview == "" {
-			preview = "—"
-		}
-		line := fmt.Sprintf("%s  %s", label, truncatePlain(preview, 50))
-		b.WriteString(cursor + st.Render(line) + "\n")
+		b.WriteString(cursor + st.Render(label) + "\n")
 	}
 	b.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
 		Render("1-3 / Enter copy   Esc cancel"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("86")).
-		Padding(1, 3).Width(64).Render(b.String())
+		Padding(1, 3).Width(36).Render(b.String())
 	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, box)
 }
 
