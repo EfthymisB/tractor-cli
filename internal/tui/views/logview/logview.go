@@ -3,6 +3,7 @@ package logview
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -31,11 +32,14 @@ type Model struct {
 	spinner  spinner.Model
 	search   textinput.Model
 
-	jid, tid int
-	lines    []string
-	matches  []int // indices of lines matching the active query
-	matchPos int
-	query    string
+	jid, tid  int
+	owner     string
+	jobTitle  string
+	taskTitle string
+	lines     []string
+	matches   []int // indices of lines matching the active query
+	matchPos  int
+	query     string
 
 	searching bool
 	loading   bool
@@ -63,9 +67,12 @@ func New(client *api.Client, cfg *config.Config) Model {
 }
 
 // Load points the viewer at a task and fetches its log.
-func (m Model) Load(jid, tid int, owner string) (Model, tea.Cmd) {
+func (m Model) Load(jid, tid int, owner, jobTitle, taskTitle string) (Model, tea.Cmd) {
 	m.jid = jid
 	m.tid = tid
+	m.owner = owner
+	m.jobTitle = jobTitle
+	m.taskTitle = taskTitle
 	m.lines = nil
 	m.matches = nil
 	m.matchPos = 0
@@ -79,11 +86,11 @@ func (m Model) Load(jid, tid int, owner string) (Model, tea.Cmd) {
 		m.viewport.SetContent("")
 		m.viewport.GotoTop()
 	}
-	return m, tea.Batch(m.fetch(owner), m.spinner.Tick)
+	return m, tea.Batch(m.fetch(), m.spinner.Tick)
 }
 
-func (m Model) fetch(owner string) tea.Cmd {
-	jid, tid := m.jid, m.tid
+func (m Model) fetch() tea.Cmd {
+	jid, tid, owner := m.jid, m.tid, m.owner
 	return func() tea.Msg {
 		text, err := m.client.TaskLog(jid, tid, owner)
 		if err != nil {
@@ -96,9 +103,11 @@ func (m Model) fetch(owner string) tea.Cmd {
 // CapturingInput reports whether the search input is consuming keys.
 func (m Model) CapturingInput() bool { return m.searching }
 
-// JID and TID identify the task being shown.
-func (m Model) JID() int { return m.jid }
-func (m Model) TID() int { return m.tid }
+// Accessors used by the root model's status bar.
+func (m Model) JID() int          { return m.jid }
+func (m Model) TID() int          { return m.tid }
+func (m Model) JobTitle() string  { return m.jobTitle }
+func (m Model) TaskTitle() string { return m.taskTitle }
 
 // SetSize updates dimensions and (re)initialises the viewport.
 func (m Model) SetSize(w, h int) Model {
@@ -194,6 +203,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.searching = true
 			m.syncViewportHeight()
 			return m, m.search.Focus()
+		case "c":
+			// Clear the active search.
+			m.query = ""
+			m.matches = nil
+			m.matchPos = 0
+			if m.ready {
+				m.viewport.SetContent(m.renderContent())
+			}
+			return m, nil
+		case "R":
+			// Re-fetch the current task's log.
+			m.loading = true
+			if m.ready {
+				m.viewport.SetContent(m.renderContent())
+			}
+			return m, tea.Batch(m.fetch(), m.spinner.Tick)
 		case "n":
 			m.nextMatch(1)
 			return m, nil
@@ -274,7 +299,14 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
-	title := fmt.Sprintf("Log — Job %d / Task %d", m.jid, m.tid)
+	title := fmt.Sprintf("Log — Job %d", m.jid)
+	if m.jobTitle != "" {
+		title += " (" + m.jobTitle + ")"
+	}
+	title += fmt.Sprintf("  Task %d", m.tid)
+	if m.taskTitle != "" {
+		title += " (" + m.taskTitle + ")"
+	}
 	if m.loading {
 		title += "  " + m.spinner.View()
 	} else if m.query != "" {
@@ -285,7 +317,7 @@ func (m Model) renderHeader() string {
 		}
 	}
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-		Render("   [Esc] back  [/] search  [n/N] next/prev  [g/G] top/bottom")
+		Render("   [Esc] back  [/] search  [c] clear  [n/N] match  [[ ]] task  [R] refresh")
 	return styles.Title.Render(title) + hint
 }
 
@@ -319,23 +351,86 @@ func (m Model) renderContent() string {
 	return b.String()
 }
 
-// styleLogLine colours a log line by severity keyword and highlights search
-// matches (the current match more strongly).
+// logToken matches the syntactic pieces we colour. Order of alternation sets
+// precedence (timestamps before bare times/numbers, etc.).
+var logToken = regexp.MustCompile(
+	`(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)` + // 2024-01-02 15:04:05
+		`|(?P<time>\b\d{1,2}:\d{2}:\d{2}\b)` + // 15:04:05
+		`|(?P<level>(?i)\b(?:CRITICAL|CRIT|FATAL|ERROR|ERR|WARNING|WARN|NOTICE|INFO|DEBUG|TRACE)\b)` +
+		`|(?P<url>https?://[^\s]+)` +
+		`|(?P<str>"[^"]*"|'[^']*')` +
+		`|(?P<path>(?:/[\w.+\-]+){2,}/?)` + // /abs/paths/like/this
+		`|(?P<num>\b\d+(?:\.\d+)?\b)`,
+)
+
+var logTokenNames = logToken.SubexpNames()
+
+// styleLogLine colours search matches (whole line) or, when not a match,
+// applies per-token syntax highlighting.
 func styleLogLine(line string, matched, current bool) string {
-	st := lipgloss.NewStyle()
-	low := strings.ToLower(line)
-	switch {
-	case strings.Contains(low, "error"), strings.Contains(low, "traceback"),
-		strings.Contains(low, "fatal"), strings.Contains(low, "exception"):
-		st = st.Foreground(lipgloss.Color("9"))
-	case strings.Contains(low, "warning"), strings.Contains(low, "warn"):
-		st = st.Foreground(lipgloss.Color("11"))
-	}
 	switch {
 	case current:
-		st = st.Background(lipgloss.Color("58")).Bold(true)
+		return lipgloss.NewStyle().Background(lipgloss.Color("58")).Bold(true).Render(line)
 	case matched:
-		st = st.Background(lipgloss.Color("236"))
+		return lipgloss.NewStyle().Background(lipgloss.Color("236")).Render(line)
 	}
-	return st.Render(line)
+	return highlightLog(line)
+}
+
+// highlightLog applies VS Code-style token colouring to a single log line.
+func highlightLog(line string) string {
+	matches := logToken.FindAllStringSubmatchIndex(line, -1)
+	if len(matches) == 0 {
+		return line
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		if start < last {
+			continue
+		}
+		b.WriteString(line[last:start])
+		class := ""
+		for g := 1; g < len(logTokenNames); g++ {
+			if logTokenNames[g] != "" && m[2*g] >= 0 {
+				class = logTokenNames[g]
+				break
+			}
+		}
+		b.WriteString(styleToken(class, line[start:end]))
+		last = end
+	}
+	b.WriteString(line[last:])
+	return b.String()
+}
+
+func styleToken(class, tok string) string {
+	st := lipgloss.NewStyle()
+	switch class {
+	case "ts", "time":
+		st = st.Foreground(lipgloss.Color("45")) // cyan
+	case "level":
+		switch strings.ToUpper(tok) {
+		case "CRITICAL", "CRIT", "FATAL", "ERROR", "ERR":
+			st = st.Foreground(lipgloss.Color("9")).Bold(true)
+		case "WARNING", "WARN":
+			st = st.Foreground(lipgloss.Color("11"))
+		case "INFO", "NOTICE":
+			st = st.Foreground(lipgloss.Color("10"))
+		default: // DEBUG, TRACE
+			st = st.Foreground(lipgloss.Color("245"))
+		}
+	case "url":
+		st = st.Foreground(lipgloss.Color("39")).Underline(true)
+	case "str":
+		st = st.Foreground(lipgloss.Color("114")) // green
+	case "path":
+		st = st.Foreground(lipgloss.Color("39")) // blue
+	case "num":
+		st = st.Foreground(lipgloss.Color("213")) // magenta
+	default:
+		return tok
+	}
+	return st.Render(tok)
 }

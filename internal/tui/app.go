@@ -134,9 +134,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if tid := m.detail.SelectedTID(); tid > 0 {
 					m.activeView = ViewTaskLog
 					var cmd tea.Cmd
-					m.logView, cmd = m.logView.Load(m.detail.JID(), tid, m.detail.Owner())
+					m.logView, cmd = m.logView.Load(
+						m.detail.JID(), tid, m.detail.Owner(),
+						m.detail.JobTitle(), m.detail.TitleForTID(tid))
 					return m, cmd
 				}
+			}
+		case "]", "[":
+			// In the log view, jump to the next/previous task's log.
+			if m.activeView == ViewTaskLog && !capturing {
+				dir := 1
+				if msg.String() == "[" {
+					dir = -1
+				}
+				next := m.detail.AdjacentTID(m.logView.TID(), dir)
+				if next > 0 {
+					m.detail = m.detail.SelectTID(next)
+					var cmd tea.Cmd
+					m.logView, cmd = m.logView.Load(
+						m.detail.JID(), next, m.detail.Owner(),
+						m.detail.JobTitle(), m.detail.TitleForTID(next))
+					return m, cmd
+				}
+				return m, nil
 			}
 		case "esc":
 			// Walk back one view level, unless a search box is open (the view
@@ -145,7 +165,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch m.activeView {
 				case ViewTaskLog:
 					m.activeView = ViewJobDetail
-					return m, nil
+					var cmd tea.Cmd
+					m.detail, cmd = m.detail.RefreshPanel()
+					return m, cmd
 				case ViewJobDetail:
 					m.activeView = ViewJobsList
 					return m, nil
@@ -254,6 +276,20 @@ func (m Model) renderHelp() string {
 		row("1 – 9", "Sort by column (press again to reverse)"),
 		row("< / >", "Shrink / grow TITLE column"),
 	) + "\n\n")
+	b.WriteString(section("Tasks view",
+		row("/", "Search by title"),
+		row("1 – 7", "Sort by column"),
+		row("Enter", "Open the task's log"),
+		row("R", "Refresh tasks"),
+	) + "\n\n")
+	b.WriteString(section("Log view",
+		row("/", "Search log"),
+		row("c", "Clear search"),
+		row("n / N", "Next / previous match"),
+		row("[ / ]", "Previous / next task's log"),
+		row("g / G", "Top / bottom"),
+		row("R", "Refresh log"),
+	) + "\n\n")
 	b.WriteString(section("Filter form",
 		row("Tab / ⇧Tab", "Move between fields"),
 		row("Space", "Toggle status chip"),
@@ -283,11 +319,13 @@ func (m Model) statusBar() string {
 	var err error
 	switch m.activeView {
 	case ViewTaskLog:
-		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Job %d  │  Task %d  │  log",
-			user, host, m.logView.JID(), m.logView.TID())
+		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Job %d %s  │  Task %d %s",
+			user, host,
+			m.logView.JID(), parenTitle(m.logView.JobTitle()),
+			m.logView.TID(), parenTitle(m.logView.TaskTitle()))
 	case ViewJobDetail:
-		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Job %d  │  Tasks: %d",
-			user, host, m.detail.JID(), m.detail.TaskCount())
+		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Job %d %s  │  Tasks: %d",
+			user, host, m.detail.JID(), parenTitle(m.detail.JobTitle()), m.detail.TaskCount())
 		loading = m.detail.IsLoading()
 		err = m.detail.Err()
 	default:
@@ -321,6 +359,14 @@ func (m Model) statusBar() string {
 	return styles.StatusBar.Width(m.width).Render(
 		left + fmt.Sprintf("%*s", gap, "") + right,
 	)
+}
+
+// parenTitle wraps a non-empty title in parentheses for the status bar.
+func parenTitle(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "(" + s + ")"
 }
 
 func scheduleTick(d time.Duration) tea.Cmd {

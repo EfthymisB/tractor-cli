@@ -409,6 +409,62 @@ func (m DetailModel) TaskCount() int     { return len(m.tasks) }
 func (m DetailModel) IsLoading() bool    { return m.loading }
 func (m DetailModel) Err() error         { return m.err }
 
+// JobTitle returns the title of the job whose tasks are shown.
+func (m DetailModel) JobTitle() string { return m.jobTitle }
+
+// TitleForTID returns the title of the task with the given id, or "".
+func (m DetailModel) TitleForTID(tid int) string {
+	for _, t := range m.tasks {
+		if t.TID == tid {
+			return t.Title
+		}
+	}
+	for _, t := range m.allTasks {
+		if t.TID == tid {
+			return t.Title
+		}
+	}
+	return ""
+}
+
+// AdjacentTID returns the task id dir steps away from tid in the current
+// (filtered/sorted) order, or 0 if out of range.
+func (m DetailModel) AdjacentTID(tid, dir int) int {
+	for i, t := range m.tasks {
+		if t.TID == tid {
+			j := i + dir
+			if j >= 0 && j < len(m.tasks) {
+				return m.tasks[j].TID
+			}
+			return 0
+		}
+	}
+	return 0
+}
+
+// SelectTID moves the cursor to the task with the given id so returning from
+// the log view lands on the right task. The info panel is marked stale (it is
+// refreshed via RefreshPanel when the detail view becomes active again).
+func (m DetailModel) SelectTID(tid int) DetailModel {
+	for i, t := range m.tasks {
+		if t.TID == tid {
+			m.table.SetCursor(i)
+			m = m.syncTopRow()
+			m.detailTID = 0
+			m.detailLoading = false
+			m.taskDetail = models.TaskDetail{}
+			break
+		}
+	}
+	return m
+}
+
+// RefreshPanel re-fetches the info panel for the current selection (used when
+// returning to the detail view from the log view).
+func (m DetailModel) RefreshPanel() (DetailModel, tea.Cmd) {
+	return m.maybeFetchDetail()
+}
+
 // SelectedTID returns the task id of the highlighted row, or 0.
 func (m DetailModel) SelectedTID() int {
 	row := m.table.SelectedRow()
