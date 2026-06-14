@@ -4,6 +4,7 @@ package logview
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -406,18 +407,39 @@ func (m *Model) setContent() {
 		cur = m.matches[m.matchPos]
 	}
 
-	width := m.viewport.Width
+	// Line-number gutter: width of the largest number + a trailing space.
+	numW := len(strconv.Itoa(len(m.lines)))
+	gutterW := numW + 1
+	contentW := m.viewport.Width - gutterW
+	if contentW < 1 { // terminal too narrow for a gutter
+		contentW = m.viewport.Width
+		gutterW = 0
+	}
+	gutStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
 	lineStart := make([]int, len(m.lines))
 	var display []string
 	for i, raw := range m.lines {
 		lineStart[i] = len(display)
 		matched, isCur := matchSet[i], i == cur
+
+		var segs []string
 		if m.wrap {
-			for _, seg := range hardWrap(raw, width) {
-				display = append(display, styleLogLine(seg, matched, isCur))
-			}
+			segs = hardWrap(raw, contentW)
 		} else {
-			display = append(display, styleLogLine(sliceH(raw, m.xOffset, width), matched, isCur))
+			segs = []string{sliceH(raw, m.xOffset, contentW)}
+		}
+
+		for j, seg := range segs {
+			gutter := ""
+			if gutterW > 0 {
+				if j == 0 {
+					gutter = gutStyle.Render(fmt.Sprintf("%*d ", numW, i+1))
+				} else {
+					gutter = strings.Repeat(" ", gutterW) // blank for wrapped rows
+				}
+			}
+			display = append(display, gutter+styleLogLine(seg, matched, isCur))
 		}
 	}
 	m.lineStart = lineStart
