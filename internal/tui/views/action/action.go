@@ -13,9 +13,11 @@ import (
 
 // Target identifies what an action operates on.
 type Target struct {
-	Kind   string // "job" or "task"
+	Kind   string // "job", "task" or "blade"
 	JID    int
 	TID    int
+	Name   string // blade name
+	Addr   string // blade ip address
 	Label  string // human label, e.g. "Job 123 — comp"
 	Paused bool   // job paused state (for pause/unpause)
 }
@@ -82,6 +84,13 @@ func (m Model) OpenTask(jid, tid int, label string) Model {
 	return m.reset()
 }
 
+// OpenBlade opens the menu with blade-level actions.
+func (m Model) OpenBlade(name, addr, label string, nimbied bool) Model {
+	m.target = Target{Kind: "blade", Name: name, Addr: addr, Label: label}
+	m.items = bladeItems(nimbied)
+	return m.reset()
+}
+
 func (m Model) reset() Model {
 	m.active = true
 	m.cursor = 0
@@ -115,6 +124,18 @@ func taskItems() []Item {
 		{Label: "Resume", Op: "resume"},
 		{Label: "Skip", Op: "skip"},
 		{Label: "Kill", Op: "kill", Destructive: true},
+	}
+}
+
+func bladeItems(nimbied bool) []Item {
+	nimby := Item{Label: "Nimby", Op: "nimby"}
+	if nimbied {
+		nimby = Item{Label: "Unnimby", Op: "unnimby"}
+	}
+	return []Item{
+		nimby,
+		{Label: "Eject all tasks", Op: "eject", Destructive: true},
+		{Label: "Delist (remove entry)", Op: "delist", Destructive: true},
 	}
 }
 

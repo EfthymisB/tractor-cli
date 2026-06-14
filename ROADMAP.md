@@ -15,7 +15,7 @@ _Last updated: 2026-06-10 (after Phase 3)._
 | 2 | Jobs list view | ✅ Done |
 | 3 | Job detail + task list + task logs | ✅ Done |
 | 4 | Actions (retry / kill / delete / skip / pause …) | 🚧 In progress |
-| 5 | Blades view | ⬜ Planned |
+| 5 | Blades view | ✅ Done |
 | 6 | Polish & release | ⬜ Planned |
 
 ---
@@ -114,13 +114,18 @@ value-input step and a confirmation step for destructive actions.
       we surface its error).
 - [ ] Multi-select / bulk actions across several jobs or tasks.
 
-## Phase 5 — Blades view ⬜
+## Phase 5 — Blades view ✅
 
-- [ ] Blade list (`q=blades`): name, status, nimby, load, mem/disk, slots,
-      profile, last heartbeat.
-- [ ] Filter/sort/search; row colouring by status.
-- [ ] Blade detail / current tasks.
-- [ ] Blade actions: nimby/unnimby, eject, trace, delist.
+- [x] Blade list (`q=blades`): NAME, STATUS (up/down from heartbeat), NIMBY,
+      SLOTS (in-use/total), CPU load, MEM, DISK, TASKS, PROFILE, OWNERS.
+- [x] Reached with `b` from the jobs list; `Esc` returns.
+- [x] Name search (`/`), column sort (`1`–`9`), row colouring
+      (down=grey, nimby=yellow, up=green), auto-refresh.
+- [x] Info panel: addr/port, OS, GPU, version, UDI, CPUs, heartbeat, uptime,
+      note.
+- [x] Blade actions via `a`: nimby/unnimby, eject (confirm), delist (confirm).
+- [ ] Blade detail view with the blade's current tasks/commands (`q=bladedetails`).
+- [ ] Trace output (`q=tracer`).
 
 ## Phase 6 — Polish & release ⬜
 

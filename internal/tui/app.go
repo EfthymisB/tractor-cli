@@ -15,6 +15,7 @@ import (
 	"github.com/tractor-cli/tractor-cli/internal/config"
 	"github.com/tractor-cli/tractor-cli/internal/tui/styles"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/action"
+	"github.com/tractor-cli/tractor-cli/internal/tui/views/blades"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/jobs"
 	"github.com/tractor-cli/tractor-cli/internal/tui/views/logview"
 )
@@ -38,6 +39,7 @@ type Model struct {
 	jobsList   jobs.ListModel
 	detail     jobs.DetailModel
 	logView    logview.Model
+	blades     blades.Model
 	actionMenu action.Model
 
 	client *api.Client
@@ -63,6 +65,7 @@ func New(client *api.Client, cfg *config.Config) Model {
 		jobsList:   jobs.New(client, cfg),
 		detail:     jobs.NewDetail(client, cfg),
 		logView:    logview.New(client, cfg),
+		blades:     blades.New(client, cfg),
 		actionMenu: action.New(),
 		client:     client,
 		cfg:        cfg,
@@ -89,6 +92,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.jobsList = m.jobsList.SetSize(m.width, m.height-1)
 		m.detail = m.detail.SetSize(m.width, m.height-1)
 		m.logView = m.logView.SetSize(m.width, m.height-1)
+		m.blades = m.blades.SetSize(m.width, m.height-1)
 		return m, nil
 
 	case action.ChosenMsg:
@@ -106,9 +110,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Reflect the change by refreshing the active view.
 		var refresh tea.Cmd
-		if m.activeView == ViewJobDetail {
+		switch m.activeView {
+		case ViewJobDetail:
 			m.detail, refresh = m.detail.Refresh()
-		} else {
+		case ViewBladesList:
+			m.blades, refresh = m.blades.Refresh()
+		default:
 			m.jobsList, refresh = m.jobsList.Refresh()
 		}
 		return m, refresh
@@ -211,8 +218,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+		case "b":
+			// Toggle into the blades view from the jobs list.
+			if !capturing && m.activeView == ViewJobsList {
+				m.activeView = ViewBladesList
+				var cmd tea.Cmd
+				m.blades, cmd = m.blades.Refresh()
+				return m, cmd
+			}
 		case "a":
-			// Open the action menu for the current job (list) or task (detail).
+			// Open the action menu for the current job/task/blade.
 			if !capturing {
 				switch m.activeView {
 				case ViewJobsList:
@@ -225,6 +240,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if tid := m.detail.SelectedTID(); tid > 0 {
 						label := fmt.Sprintf("Task %d (Job %d)", tid, m.detail.JID())
 						m.actionMenu = m.actionMenu.OpenTask(m.detail.JID(), tid, label)
+						return m, nil
+					}
+				case ViewBladesList:
+					if bl, ok := m.blades.SelectedBlade(); ok {
+						m.actionMenu = m.actionMenu.OpenBlade(bl.Name, bl.Addr, "Blade "+bl.Name, isBladeNimbied(bl.Nimby))
 						return m, nil
 					}
 				}
@@ -242,6 +262,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case ViewJobDetail:
 					m.activeView = ViewJobsList
 					return m, nil
+				case ViewBladesList:
+					m.activeView = ViewJobsList
+					return m, nil
 				}
 			}
 		}
@@ -249,9 +272,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		// Auto-refresh whichever view is in front.
 		var refreshCmd tea.Cmd
-		if m.activeView == ViewJobDetail {
+		switch m.activeView {
+		case ViewJobDetail:
 			m.detail, refreshCmd = m.detail.Refresh()
-		} else {
+		case ViewBladesList:
+			m.blades, refreshCmd = m.blades.Refresh()
+		default:
 			m.jobsList, refreshCmd = m.jobsList.Refresh()
 		}
 		cmds = append(cmds, refreshCmd)
@@ -268,6 +294,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logView, childCmd = m.logView.Update(msg)
 	case ViewJobDetail:
 		m.detail, childCmd = m.detail.Update(msg)
+	case ViewBladesList:
+		m.blades, childCmd = m.blades.Update(msg)
 	default:
 		m.jobsList, childCmd = m.jobsList.Update(msg)
 	}
@@ -289,9 +317,17 @@ func (m Model) capturingInput() bool {
 		return m.logView.CapturingInput()
 	case ViewJobDetail:
 		return m.detail.CapturingInput()
+	case ViewBladesList:
+		return m.blades.CapturingInput()
 	default:
 		return m.jobsList.CapturingInput()
 	}
+}
+
+// isBladeNimbied reports whether a blade's nimby field indicates it is nimbied.
+func isBladeNimbied(nimby string) bool {
+	n := strings.TrimSpace(nimby)
+	return n != "" && n != "0"
 }
 
 func (m Model) View() string {
@@ -310,6 +346,8 @@ func (m Model) View() string {
 		body = m.logView.View()
 	case ViewJobDetail:
 		body = m.detail.View()
+	case ViewBladesList:
+		body = m.blades.View()
 	default:
 		body = m.jobsList.View()
 	}
@@ -345,6 +383,7 @@ func (m Model) renderHelp() string {
 		row("m", "Toggle my jobs"),
 		row("e", "Toggle errors only"),
 		row("a", "Actions menu (job/task)"),
+		row("b", "Blades view"),
 		row("R", "Refresh now"),
 	) + "\n\n")
 	b.WriteString(section("Columns",
@@ -358,6 +397,13 @@ func (m Model) renderHelp() string {
 		row("a", "Actions menu (task)"),
 		row("Enter", "Open the task's log"),
 		row("R", "Refresh tasks"),
+	) + "\n\n")
+	b.WriteString(section("Blades view",
+		row("/", "Search by name"),
+		row("1 – 9", "Sort by column"),
+		row("a", "Actions menu (nimby/eject/delist)"),
+		row("Esc", "Back to jobs"),
+		row("R", "Refresh blades"),
 	) + "\n\n")
 	b.WriteString(section("Log view",
 		row("/", "Search log"),
@@ -407,6 +453,11 @@ func (m Model) statusBar() string {
 			user, host, m.detail.JID(), parenTitle(m.detail.JobTitle()), m.detail.TaskCount())
 		loading = m.detail.IsLoading()
 		err = m.detail.Err()
+	case ViewBladesList:
+		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Blades: %d",
+			user, host, m.blades.BladeCount())
+		loading = m.blades.IsLoading()
+		err = m.blades.Err()
 	default:
 		left = fmt.Sprintf(" tractor-cli  │  %s@%s  │  Jobs: %d",
 			user, host, m.jobsList.JobCount())
@@ -495,6 +546,14 @@ func (m Model) runAction(c action.ChosenMsg) tea.Cmd {
 			err = client.SkipTask(t.JID, t.TID)
 		case "kill":
 			err = client.KillTask(t.JID, t.TID)
+		case "nimby":
+			err = client.NimbyBlade(t.Name, t.Addr)
+		case "unnimby":
+			err = client.UnnimbyBlade(t.Name, t.Addr)
+		case "eject":
+			err = client.EjectBlade(t.Name, t.Addr)
+		case "delist":
+			err = client.DelistBlade(t.Name, t.Addr)
 		default:
 			err = fmt.Errorf("unknown action %q", op)
 		}
