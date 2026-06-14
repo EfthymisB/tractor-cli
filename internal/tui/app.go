@@ -53,6 +53,8 @@ type Model struct {
 	client *api.Client
 	cfg    *config.Config
 
+	keyActions map[string]string // configured key -> action name
+
 	spinner spinner.Model
 
 	showHelp  bool
@@ -117,6 +119,7 @@ func New(client *api.Client, cfg *config.Config) Model {
 		actionMenu:  action.New(),
 		stateData:   st,
 		saveInput:   saveIn,
+		keyActions:  buildKeyActions(cfg.Keys),
 		client:      client,
 		cfg:         cfg,
 		spinner:     sp,
@@ -427,19 +430,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// filter form, or the task-search box) that should receive raw keys.
 		capturing := m.capturingInput()
 
-		switch msg.String() {
+		switch m.keyAction(msg.String()) {
 		case "ctrl+c":
 			return m, tea.Quit
-		case "q":
-			// Don't quit while an input is capturing keystrokes — "q" may be
+		case "quit":
+			// Don't quit while an input is capturing keystrokes — the key may be
 			// part of a username or title being typed.
 			if capturing {
 				break
 			}
 			m.saveState()
 			return m, tea.Quit
-		case "?":
-			// Open help, unless an input wants the literal "?".
+		case "help":
+			// Open help, unless an input wants the literal key.
 			if !capturing {
 				m.showHelp = true
 				return m, nil
@@ -476,14 +479,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 			}
-		case "]", "[":
+		case "next", "prev":
 			// Jump to the next/previous sibling: task log in the log view,
 			// job in the task view.
 			if capturing {
 				break
 			}
 			dir := 1
-			if msg.String() == "[" {
+			if m.keyAction(msg.String()) == "prev" {
 				dir = -1
 			}
 			switch m.activeView {
@@ -509,14 +512,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-		case "s":
+		case "savefilter":
 			// Save the current filter under a name.
 			if !capturing && m.activeView == ViewJobsList {
 				m.showSaveFilter = true
 				m.saveInput.SetValue("")
 				return m, m.saveInput.Focus()
 			}
-		case "f":
+		case "loadfilter":
 			// Recall a saved filter.
 			if !capturing && m.activeView == ViewJobsList {
 				m.loadNames = m.stateData.FilterNames()
@@ -529,7 +532,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loadCursor = 0
 				return m, nil
 			}
-		case "y":
+		case "yank":
 			// Yank a context value to the clipboard (OSC 52 — works over SSH).
 			if !capturing {
 				// In the task view, offer a choice of what to copy.
@@ -564,7 +567,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !capturing && m.activeView == ViewTaskLog {
 				return m, openInPager(m.logView.RawText())
 			}
-		case "n":
+		case "notes":
 			// Show the selected job's notes overlay.
 			if !capturing {
 				jid, title := 0, ""
@@ -587,7 +590,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.fetchNotes(jid)
 				}
 			}
-		case "t":
+		case "trace":
 			// Show the engine's trace for the highlighted blade.
 			if !capturing && m.activeView == ViewBladesList {
 				if bl, ok := m.blades.SelectedBlade(); ok {
@@ -602,7 +605,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.fetchTrace(bl.Name, bl.Addr)
 				}
 			}
-		case "b":
+		case "blades":
 			// Toggle into the blades view from the jobs list.
 			if !capturing && m.activeView == ViewJobsList {
 				m.activeView = ViewBladesList
@@ -610,7 +613,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.blades, cmd = m.blades.Refresh()
 				return m, cmd
 			}
-		case "a":
+		case "actions":
 			// Open the action menu for the current job/task/blade.
 			if !capturing {
 				switch m.activeView {
@@ -718,6 +721,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, spinCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+// buildKeyActions inverts the configured keymap into key -> action lookups.
+func buildKeyActions(k config.KeymapConfig) map[string]string {
+	m := map[string]string{}
+	set := func(key, action string) {
+		if key != "" {
+			m[key] = action
+		}
+	}
+	set(k.Quit, "quit")
+	set(k.Help, "help")
+	set(k.Actions, "actions")
+	set(k.Blades, "blades")
+	set(k.Notes, "notes")
+	set(k.Trace, "trace")
+	set(k.Yank, "yank")
+	set(k.SaveFilter, "savefilter")
+	set(k.LoadFilter, "loadfilter")
+	set(k.Next, "next")
+	set(k.Prev, "prev")
+	return m
+}
+
+// keyAction maps a raw key to its configured action name, or returns the key
+// unchanged (so structural keys like ctrl+c/enter/esc still match literally).
+func (m Model) keyAction(key string) string {
+	if a, ok := m.keyActions[key]; ok {
+		return a
+	}
+	return key
 }
 
 // capturingInput reports whether the active view has a focused text input that

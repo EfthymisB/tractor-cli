@@ -16,6 +16,23 @@ type Config struct {
 	UI      UIConfig      `mapstructure:"ui"`
 	Filters FiltersConfig `mapstructure:"filters"`
 	LDAP    LDAPConfig    `mapstructure:"ldap"`
+	Keys    KeymapConfig  `mapstructure:"keys"`
+}
+
+// KeymapConfig lets users rebind the global shortcuts. Defaults are filled in
+// by Load. View-internal keys (sort numbers, filter form, etc.) are fixed.
+type KeymapConfig struct {
+	Quit       string `mapstructure:"quit"`
+	Help       string `mapstructure:"help"`
+	Actions    string `mapstructure:"actions"`
+	Blades     string `mapstructure:"blades"`
+	Notes      string `mapstructure:"notes"`
+	Trace      string `mapstructure:"trace"`
+	Yank       string `mapstructure:"yank"`
+	SaveFilter string `mapstructure:"save_filter"`
+	LoadFilter string `mapstructure:"load_filter"`
+	Next       string `mapstructure:"next"`
+	Prev       string `mapstructure:"prev"`
 }
 
 // LDAPConfig holds settings for the Active Directory query that populates
@@ -72,6 +89,17 @@ func Load() (*Config, error) {
 	v.SetDefault("ldap.base_dn", "dc=weacceptyou,dc=com")
 	v.SetDefault("ldap.realm", "WEACCEPTYOU.COM")
 	v.SetDefault("ldap.auto_kinit", false)
+	v.SetDefault("keys.quit", "q")
+	v.SetDefault("keys.help", "?")
+	v.SetDefault("keys.actions", "a")
+	v.SetDefault("keys.blades", "b")
+	v.SetDefault("keys.notes", "n")
+	v.SetDefault("keys.trace", "t")
+	v.SetDefault("keys.yank", "y")
+	v.SetDefault("keys.save_filter", "s")
+	v.SetDefault("keys.load_filter", "f")
+	v.SetDefault("keys.next", "]")
+	v.SetDefault("keys.prev", "[")
 
 	// Config file location
 	cfgDir, err := os.UserConfigDir()

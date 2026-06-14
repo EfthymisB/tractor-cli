@@ -155,7 +155,8 @@ value-input step and a confirmation step for destructive actions.
 - [x] CI (GitHub Actions: gofmt report, vet, build, test).
 - [x] Unit tests for filter parsing, WHERE building, status/state decoding,
       passwd/LDAP parsing, metadata/progress helpers.
-- [ ] Configurable keymap (currently fixed; documented via `?`).
+- [x] Configurable keymap for global shortcuts (`keys:` in config); view-internal
+      keys remain fixed.
 
 ---
 

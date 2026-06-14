@@ -36,7 +36,22 @@ ldap:                        # owner-filter autocomplete (Active Directory)
   base_dn: dc=example,dc=com
   realm: EXAMPLE.COM
   auto_kinit: false          # opt-in; runs kinit with TRACTOR_PASSWORD if no ticket
+keys:                        # rebind global shortcuts (defaults shown)
+  quit: q
+  help: "?"
+  actions: a
+  blades: b
+  notes: n
+  trace: t
+  yank: y
+  save_filter: s
+  load_filter: f
+  next: "]"
+  prev: "["
 ```
+
+Only the global shortcuts above are rebindable; view-internal keys (sort numbers,
+`/` filter, `Enter`, `Esc`, etc.) are fixed. `?` always lists the current keys.
 
 Environment overrides: `TRACTOR_HOST`, `TRACTOR_PORT`, `TRACTOR_USER`,
 `TRACTOR_LDAP_URI`, `TRACTOR_LDAP_BASE_DN`, `TRACTOR_LDAP_REALM`,
