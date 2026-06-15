@@ -7,14 +7,14 @@ and act on jobs, tasks, logs and blades without leaving the terminal.
 ## Build & run
 
 ```bash
-go build -o tractor ./cmd/tractor
-./tractor
+go build -o tractor-cli ./cmd/tractor-cli
+./tractor-cli
 ```
 
 or just:
 
 ```bash
-go run ./cmd/tractor
+go run ./cmd/tractor-cli
 ```
 
 ## Configuration

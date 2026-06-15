@@ -1,6 +1,6 @@
 # Binaries
-/tractor
-tractor.exe
+/tractor-cli
+tractor-cli.exe
 dist/
 
 # Go build cache

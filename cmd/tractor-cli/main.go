@@ -20,7 +20,7 @@ func main() {
 	var raw bool
 
 	root := &cobra.Command{
-		Use:     "tractor",
+		Use:     "tractor-cli",
 		Short:   "Interactive TUI for Pixar Tractor render farm",
 		Version: version,
 		RunE: func(cmd *cobra.Command, args []string) error {

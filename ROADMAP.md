@@ -27,7 +27,7 @@ The dev setup is unusual — keep these in mind for every change:
   to talk to. Anything that hits the live farm API (auth, queries, actions) must
   be tested by the user on the Linux farm.
 - **The app also builds & runs on the Linux farm** (Alma 9, machine `rlin165`),
-  directly on its **MATE terminal** (not over SSH). The user runs `go run ./cmd/tractor`
+  directly on its **MATE terminal** (not over SSH). The user runs `go run ./cmd/tractor-cli`
   or `go test ./...` there and pastes farm-interaction results back.
 - **Git pushes happen from the Windows clone** (`E:\tractor_cli`). The **farm
   account lacks write access** to GitHub (403 on push), so the assistant commits
@@ -56,7 +56,7 @@ The dev setup is unusual — keep these in mind for every change:
 ## Build / test / run
 
 ```bash
-go build ./cmd/tractor      # or: go run ./cmd/tractor
+go build ./cmd/tractor-cli  # or: go run ./cmd/tractor-cli
 go test ./...               # unit tests (pure logic)
 make build | run | test | fmt | snapshot
 ```
@@ -95,7 +95,7 @@ switches between views and owns overlays (help, notes, trace, save/load-filter,
 copy chooser, action menu) and the status bar.
 
 ```
-cmd/tractor/main.go              entry (cobra); --sanity/--raw/--version
+cmd/tractor-cli/main.go          entry (cobra); --sanity/--raw/--version
 internal/config/config.go        YAML+env config; KeymapConfig; Password() (env only)
 internal/state/state.go          ~/.config/tractor-cli/state.json (layout + saved filters)
 internal/users/users.go          AD (ldapsearch GSSAPI) + getent username sources

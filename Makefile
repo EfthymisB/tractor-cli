@@ -1,10 +1,10 @@
 .PHONY: build run test vet fmt lint tidy clean snapshot
 
 build:
-	go build -o tractor ./cmd/tractor
+	go build -o tractor-cli ./cmd/tractor-cli
 
 run:
-	go run ./cmd/tractor
+	go run ./cmd/tractor-cli
 
 test:
 	go test ./...
@@ -27,5 +27,5 @@ snapshot:
 	goreleaser release --snapshot --clean
 
 clean:
-	rm -f tractor tractor.exe
+	rm -f tractor-cli tractor-cli.exe
 	rm -rf dist
