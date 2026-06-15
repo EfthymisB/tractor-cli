@@ -1,14 +1,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/tractor-cli/tractor-cli/internal/api"
 	"github.com/tractor-cli/tractor-cli/internal/config"
+	"github.com/tractor-cli/tractor-cli/internal/session"
 	"github.com/tractor-cli/tractor-cli/internal/tui"
 )
 
@@ -46,18 +49,90 @@ func buildClient() (*api.Client, *config.Config, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
-	password := config.Password()
-	if password == "" {
-		return nil, nil, fmt.Errorf("TRACTOR_PASSWORD environment variable is not set")
-	}
 	client, err := api.NewClient(cfg.BaseURL())
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating client: %w", err)
 	}
-	if err := client.Login(cfg.Auth.Username, password); err != nil {
-		return nil, nil, fmt.Errorf("login: %w", err)
+
+	sessPath := session.Path(cfg.Engine.Host, cfg.Engine.Port, cfg.Auth.Username)
+
+	// 1. Try to reuse a saved session — no password needed if it's still valid.
+	if tsid, ok := session.Load(sessPath); ok {
+		client.UseSession(cfg.Auth.Username, tsid)
+		if client.ValidateSession() {
+			return client, cfg, nil
+		}
+		// Stale/invalid tsid: discard and fall through to a fresh login.
+		session.Delete(sessPath)
+	}
+
+	// 2. Log in with a password (from $TRACTOR_PASSWORD, or prompted).
+	if err := login(client, cfg); err != nil {
+		return nil, nil, err
+	}
+
+	// 3. Persist the new session for next time (best effort).
+	if tsid := client.TSID(); tsid != "" {
+		if err := session.Save(sessPath, tsid); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save session file: %v\n", err)
+		}
 	}
 	return client, cfg, nil
+}
+
+// login authenticates client. It first tries $TRACTOR_PASSWORD; if the engine
+// requires a password and none is set (or it was wrong), it prompts interactively
+// when stdin is a terminal, allowing a few retries.
+func login(client *api.Client, cfg *config.Config) error {
+	user := cfg.Auth.Username
+	password := config.Password()
+
+	err := client.Login(user, password)
+	if err == nil {
+		return nil
+	}
+
+	// Only prompt when the engine actually wants a password and we can read one.
+	interactive := term.IsTerminal(os.Stdin.Fd())
+	needsPrompt := errors.Is(err, api.ErrPasswordRequired) ||
+		(errors.Is(err, api.ErrAuthFailed) && password == "")
+	if !needsPrompt || !interactive {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		password, err = promptPassword(user)
+		if err != nil {
+			return fmt.Errorf("reading password: %w", err)
+		}
+		if password == "" {
+			return fmt.Errorf("login aborted: no password entered")
+		}
+		err = client.Login(user, password)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, api.ErrAuthFailed) {
+			// Network/parse error — retrying the password won't help.
+			return fmt.Errorf("login: %w", err)
+		}
+		if attempt < maxAttempts {
+			fmt.Fprintln(os.Stderr, "Incorrect password, try again.")
+		}
+	}
+	return fmt.Errorf("login failed after %d attempts", maxAttempts)
+}
+
+// promptPassword reads a password from the terminal without echoing it.
+func promptPassword(user string) (string, error) {
+	fmt.Fprintf(os.Stderr, "Tractor password for %s: ", user)
+	b, err := term.ReadPassword(os.Stdin.Fd())
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func runTUI() error {

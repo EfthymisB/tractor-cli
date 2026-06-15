@@ -63,6 +63,24 @@ Environment overrides: `TRACTOR_HOST`, `TRACTOR_PORT`, `TRACTOR_USER`,
 > ```bash
 > export TRACTOR_PASSWORD='…'
 > ```
+>
+> If `TRACTOR_PASSWORD` is unset and the engine requires a password, you are
+> prompted for it interactively (no echo) on startup.
+
+### Sessions
+
+After a successful login the session token (`tsid`) is cached in a Tractor-style
+session file:
+
+```
+~/.pixarPrefs/Tractor/sites/<host>@<port>/tractor-cli.<clienthost>.<user>.session
+```
+
+On the next launch the cached session is reused (validated with a `q=status`
+check) so you are not asked for a password again. When the engine invalidates
+the session the stale file is discarded and you are prompted once more. The file
+is owner-readable only (`0600`) and shares Tractor's own format/location, so it
+interoperates with Pixar's `tq`/`tractor` tools.
 
 UI preferences (sort, column width, relative-time, saved filters) persist to
 `~/.config/tractor-cli/state.json`.

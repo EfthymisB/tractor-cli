@@ -75,7 +75,13 @@ Tooling: `Makefile`, `.goreleaser.yaml` (linux/darwin × amd64/arm64),
 `~/.config/tractor-cli/state.json`.
 
 - **`TRACTOR_PASSWORD` is read ONLY from the environment — never the config file.**
-  This rule is intentional and load-bearing; keep it.
+  This rule is intentional and load-bearing; keep it. If it's unset and the engine
+  needs a password, the user is prompted interactively (no echo) at startup.
+- **Session reuse**: after login the `tsid` is cached in a Tractor-style session
+  file (`~/.pixarPrefs/Tractor/sites/<host>@<port>/tractor-cli.<clienthost>.<user>.session`,
+  `{"tsid":...}`, 0600 — mirrors `EngineClient.sessionFilename`). On next launch
+  it's validated via `GET /Tractor/ctrl?q=status&tsid=…`; if rejected the file is
+  discarded and a password is requested again. See `internal/session`.
 - `keys:` rebinds the global shortcuts (see below); view-internal keys are fixed.
 
 ### Optional system deps
@@ -98,6 +104,7 @@ copy chooser, action menu) and the status bar.
 cmd/tractor-cli/main.go          entry (cobra); --sanity/--raw/--version
 internal/config/config.go        YAML+env config; KeymapConfig; Password() (env only)
 internal/state/state.go          ~/.config/tractor-cli/state.json (layout + saved filters)
+internal/session/session.go      Tractor-style tsid session file (reuse across runs)
 internal/users/users.go          AD (ldapsearch GSSAPI) + getent username sources
 internal/models/                 Job, Task, TaskDetail, Blade, BladeCommand, JobNote
 internal/api/

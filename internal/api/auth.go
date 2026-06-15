@@ -2,8 +2,21 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
+)
+
+// Sentinel errors so callers (e.g. the CLI entry point) can distinguish "the
+// engine wants a password but none was supplied" — which warrants an
+// interactive prompt — from "the supplied credentials were rejected".
+var (
+	// ErrPasswordRequired is returned by Login when the engine requires a
+	// password but none was provided.
+	ErrPasswordRequired = errors.New("engine requires a password")
+	// ErrAuthFailed is returned by Login when the engine rejects the
+	// credentials (wrong password, unknown user, …).
+	ErrAuthFailed = errors.New("authentication failed")
 )
 
 type loginSchemeResponse struct {
@@ -46,7 +59,7 @@ func (c *Client) Login(username, password string) error {
 
 	if needsPassword {
 		if password == "" {
-			return fmt.Errorf("engine requires a password; set TRACTOR_PASSWORD")
+			return ErrPasswordRequired
 		}
 		challenge, err := c.fetchChallenge()
 		if err != nil {
@@ -66,13 +79,42 @@ func (c *Client) Login(username, password string) error {
 		return fmt.Errorf("parsing login response: %w", err)
 	}
 	if resp.RC != 0 {
-		return fmt.Errorf("login failed (rc=%d): %s", resp.RC, resp.Msg)
+		return fmt.Errorf("%w (rc=%d): %s", ErrAuthFailed, resp.RC, resp.Msg)
 	}
 	if resp.TSID == "" {
 		return fmt.Errorf("login succeeded but no tsid in response")
 	}
 	c.tsid = resp.TSID
 	return nil
+}
+
+// UseSession adopts a previously saved session (username + tsid) without
+// performing a fresh login. Call ValidateSession afterwards to confirm the
+// engine still accepts the tsid.
+func (c *Client) UseSession(username, tsid string) {
+	c.username = username
+	c.tsid = tsid
+}
+
+// ValidateSession reports whether the current tsid is still accepted by the
+// engine, via a lightweight q=status control request (the same check Tractor's
+// own EngineClient.canReuseSession uses). It returns false on any error or a
+// non-zero rc, so the caller can fall back to a password login.
+func (c *Client) ValidateSession() bool {
+	if c.tsid == "" {
+		return false
+	}
+	b, err := c.get("/Tractor/ctrl", url.Values{"q": {"status"}, "tsid": {c.tsid}})
+	if err != nil {
+		return false
+	}
+	var resp struct {
+		RC int `json:"rc"`
+	}
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return false
+	}
+	return resp.RC == 0
 }
 
 // checkLoginScheme returns true if the engine requires a password.
