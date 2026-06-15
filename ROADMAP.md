@@ -18,11 +18,17 @@ blades from the terminal.
 
 The dev setup is unusual — keep these in mind for every change:
 
-- **Windows dev box has NO Go toolchain.** You cannot `go build`/`go vet`/`go test`
-  locally. Verify by reading carefully; the user compiles/runs on the farm.
-- **The app builds & runs on the Linux farm** (Alma 9, machine `rlin165`),
+- **Windows dev box HAS a Go toolchain** (Go 1.26.4, installed at
+  `G:\Tools\Go\bin\go.exe`). You can `go build`/`go vet`/`go test` locally on
+  Windows to catch compile errors and run the pure-logic unit tests. Note: a
+  freshly spawned shell may not have `G:\Tools\Go\bin` on its `PATH` yet —
+  invoke the full path if `go` isn't found.
+- **You still cannot exercise Tractor itself from Windows** — there's no engine
+  to talk to. Anything that hits the live farm API (auth, queries, actions) must
+  be tested by the user on the Linux farm.
+- **The app also builds & runs on the Linux farm** (Alma 9, machine `rlin165`),
   directly on its **MATE terminal** (not over SSH). The user runs `go run ./cmd/tractor`
-  or `go test ./...` there and pastes results back.
+  or `go test ./...` there and pastes farm-interaction results back.
 - **Git pushes happen from the Windows clone** (`E:\tractor_cli`). The **farm
   account lacks write access** to GitHub (403 on push), so the assistant commits
   & pushes from Windows; the user pulls on the farm.
@@ -201,4 +207,5 @@ makes global keys defer to a focused text input.
   word-aware log wrap; configurable view-internal keys; permission/ownership guard
   (currently engine-enforced, error surfaced).
 
-_Last updated: 2026-06-10 — all phases complete (latest commit on `master`)._
+_Last updated: 2026-06-15 — all phases complete; Windows dev box now has a Go
+toolchain (Go 1.26.4) for local build/vet/test._
