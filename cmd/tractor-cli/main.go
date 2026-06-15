@@ -13,6 +13,7 @@ import (
 	"github.com/tractor-cli/tractor-cli/internal/config"
 	"github.com/tractor-cli/tractor-cli/internal/session"
 	"github.com/tractor-cli/tractor-cli/internal/tui"
+	"github.com/tractor-cli/tractor-cli/internal/users"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=…".
@@ -135,11 +136,59 @@ func promptPassword(user string) (string, error) {
 	return string(b), nil
 }
 
+// ensureLDAPTicket makes sure a Kerberos ticket exists for the AD owner-
+// autocomplete lookup. It does nothing unless LDAP is fully configured (so
+// users who don't use LDAP are never bothered) and no ticket is already
+// present. With ldap.auto_kinit it tries $TRACTOR_PASSWORD non-interactively;
+// otherwise, on a terminal, it offers an optional password prompt that the user
+// can skip with an empty entry. Only one attempt is made, to avoid tripping AD
+// account-lockout policies.
+func ensureLDAPTicket(cfg *config.Config) {
+	l := cfg.LDAP
+	if l.URI == "" || l.BaseDN == "" || l.Realm == "" {
+		return // LDAP not configured — nothing to do.
+	}
+	if users.HasTicket() {
+		return
+	}
+	principal := cfg.Auth.Username + "@" + l.Realm
+
+	// Non-interactive: auto_kinit with the env password, if enabled.
+	if l.AutoKinit {
+		if pw := config.Password(); pw != "" {
+			if err := users.Kinit(principal, pw); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: auto kinit failed: %v\n", err)
+			}
+		}
+		return
+	}
+
+	// Interactive: offer an optional prompt (skippable).
+	if !term.IsTerminal(os.Stdin.Fd()) {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"No Kerberos ticket found; LDAP owner autocomplete needs one.\n"+
+			"Enter AD password for %s to run kinit (or press Enter to skip): ", principal)
+	b, err := term.ReadPassword(os.Stdin.Fd())
+	fmt.Fprintln(os.Stderr)
+	if err != nil || len(b) == 0 {
+		return // skipped or unreadable — fall back to getent + job owners.
+	}
+	if err := users.Kinit(principal, string(b)); err != nil {
+		fmt.Fprintf(os.Stderr, "kinit failed: %v (continuing without LDAP autocomplete)\n", err)
+	}
+}
+
 func runTUI() error {
 	client, cfg, err := buildClient()
 	if err != nil {
 		return err
 	}
+	// Owner autocomplete queries Active Directory over GSSAPI, which needs a
+	// Kerberos ticket. Offer to acquire one before the TUI takes over the
+	// terminal; declining just falls back to getent + job owners.
+	ensureLDAPTicket(cfg)
 	p := tea.NewProgram(
 		tui.New(client, cfg),
 		tea.WithAltScreen(),

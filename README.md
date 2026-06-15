@@ -32,9 +32,9 @@ ui:
   refresh_interval: 30       # seconds (0 = no auto-refresh)
   date_format: "15:04 02/01"
 ldap:                        # owner-filter autocomplete (Active Directory)
-  uri: ldap://dc.example.com
-  base_dn: dc=example,dc=com
-  realm: EXAMPLE.COM
+  uri: ldap://dc.example.com # blank by default — set to your own DC
+  base_dn: dc=example,dc=com # blank by default — your domain
+  realm: EXAMPLE.COM         # blank by default — your Kerberos realm
   auto_kinit: false          # opt-in; runs kinit with TRACTOR_PASSWORD if no ticket
 keys:                        # rebind global shortcuts (defaults shown)
   quit: q
@@ -56,6 +56,22 @@ Only the global shortcuts above are rebindable; view-internal keys (sort numbers
 Environment overrides: `TRACTOR_HOST`, `TRACTOR_PORT`, `TRACTOR_USER`,
 `TRACTOR_LDAP_URI`, `TRACTOR_LDAP_BASE_DN`, `TRACTOR_LDAP_REALM`,
 `TRACTOR_LDAP_AUTO_KINIT`.
+
+The `ldap` settings have **no defaults** — each user provides their own. Leave
+them blank to skip LDAP entirely (owner autocomplete then uses `getent passwd`
++ job owners). To discover your values on an AD-joined host:
+
+```bash
+grep -i default_realm /etc/krb5.conf          # your realm, e.g. EXAMPLE.COM
+dig +short SRV _ldap._tcp.example.com          # your domain controllers
+# base_dn is the domain with each label as dc=:  dc=example,dc=com
+```
+
+When LDAP **is** configured but you have no Kerberos ticket, `tractor-cli`
+offers (on startup, only on a terminal) an **optional** password prompt to run
+`kinit` — press Enter to skip. With `auto_kinit: true` it instead uses
+`TRACTOR_PASSWORD` non-interactively. Either way it's one attempt only, to avoid
+AD account lockout, and is purely for autocomplete — never required to run.
 
 > **The Tractor password is only ever read from the `TRACTOR_PASSWORD`
 > environment variable — never from the config file.**

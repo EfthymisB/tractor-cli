@@ -83,27 +83,37 @@ func fromLDAP(cfg Config) []string {
 // Active Directory account-lockout policy; on a Kerberos-backed farm a ticket
 // is normally already present (via SSSD/login) and this just returns true.
 func ensureTicket(cfg Config) bool {
-	if hasTicket() {
+	if HasTicket() {
 		return true
 	}
 	if !cfg.AutoKinit || cfg.Username == "" || cfg.Realm == "" || cfg.Password == "" {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "kinit", cfg.Username+"@"+cfg.Realm)
-	cmd.Stdin = strings.NewReader(cfg.Password + "\n")
-	if err := cmd.Run(); err != nil {
+	if err := Kinit(cfg.Username+"@"+cfg.Realm, cfg.Password); err != nil {
 		return false
 	}
-	return hasTicket()
+	return HasTicket()
 }
 
-// hasTicket reports whether the credential cache holds a valid ticket.
-func hasTicket() bool {
+// HasTicket reports whether the credential cache holds a valid Kerberos ticket.
+func HasTicket() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return exec.CommandContext(ctx, "klist", "-s").Run() == nil
+}
+
+// Kinit runs `kinit <principal>`, feeding password on stdin. It returns an
+// error if kinit is missing, times out, or rejects the password.
+//
+// Caution: a wrong password submitted to kinit can count against an Active
+// Directory account-lockout policy. Callers should only invoke this with a
+// password the user supplied deliberately (or one already known good).
+func Kinit(principal, password string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "kinit", principal)
+	cmd.Stdin = strings.NewReader(password + "\n")
+	return cmd.Run()
 }
 
 // parseLDAP extracts sAMAccountName values from ldapsearch LDIF output. Other

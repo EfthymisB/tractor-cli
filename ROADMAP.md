@@ -89,7 +89,11 @@ Tooling: `Makefile`, `.goreleaser.yaml` (linux/darwin × amd64/arm64),
   terminals block the OSC 52 escape, so a local clipboard tool is the reliable path
   (`sudo dnf install xclip`). The app warns in the status bar if none is installed.
 - **`ldapsearch` + Kerberos ticket** — owner-filter autocomplete from AD; falls
-  back to `getent passwd` + job owners.
+  back to `getent passwd` + job owners. LDAP `uri`/`base_dn`/`realm` have **no
+  defaults** (each user sets their own; blank = LDAP skipped). When LDAP is
+  configured but no ticket exists, the app offers an optional `kinit` password
+  prompt at startup (skippable; `auto_kinit` does it non-interactively with
+  `TRACTOR_PASSWORD`). One attempt only — AD lockout caution.
 - **`$PAGER`** (default `less -R`) — `o` opens a task log externally.
 
 ---

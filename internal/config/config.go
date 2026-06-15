@@ -85,9 +85,10 @@ func Load() (*Config, error) {
 	v.SetDefault("ui.default_view", "jobs")
 	v.SetDefault("ui.date_format", "15:04 02/01")
 	v.SetDefault("ui.max_log_lines", 500)
-	v.SetDefault("ldap.uri", "ldap://dc02.weacceptyou.com")
-	v.SetDefault("ldap.base_dn", "dc=weacceptyou,dc=com")
-	v.SetDefault("ldap.realm", "WEACCEPTYOU.COM")
+	// LDAP settings (uri/base_dn/realm) are intentionally left blank — each user
+	// supplies their own site values via config.yaml or the TRACTOR_LDAP_* env
+	// vars. When unset, owner autocomplete skips LDAP and uses getent + job
+	// owners instead.
 	v.SetDefault("ldap.auto_kinit", false)
 	v.SetDefault("keys.quit", "q")
 	v.SetDefault("keys.help", "?")
