@@ -1,178 +1,204 @@
-# tractor-cli — Roadmap
+# tractor-cli — Project Guide & Roadmap
 
-An interactive terminal UI (Go + Bubble Tea) for Pixar's Tractor render farm.
-Developed on Windows, deployed on Linux (Alma 9).
+> This file is a self-contained handoff for a fresh assistant/chat with no prior
+> context. It covers what the project is, how to work on it, the engine quirks
+> learned the hard way, the full feature set, and what's left.
 
-_Last updated: 2026-06-10 (Phase 6 in progress)._
+An interactive terminal UI (Go + [Bubble Tea](https://github.com/charmbracelet/bubbletea))
+for Pixar's **Tractor** render farm — browse and act on jobs, tasks, logs and
+blades from the terminal.
+
+- **Repo**: https://github.com/EfthymisB/tractor-cli (branch `master`)
+- **Module**: `github.com/tractor-cli/tractor-cli`, **Go 1.24** (`go.mod`/`go.sum` committed)
+- **Status**: all six phases complete + a quality-of-life batch. Feature-complete; ready to tag `v0.1.0`.
 
 ---
 
-## Status at a glance
+## ⚠️ How development works here (read first)
+
+The dev setup is unusual — keep these in mind for every change:
+
+- **Windows dev box has NO Go toolchain.** You cannot `go build`/`go vet`/`go test`
+  locally. Verify by reading carefully; the user compiles/runs on the farm.
+- **The app builds & runs on the Linux farm** (Alma 9, machine `rlin165`),
+  directly on its **MATE terminal** (not over SSH). The user runs `go run ./cmd/tractor`
+  or `go test ./...` there and pastes results back.
+- **Git pushes happen from the Windows clone** (`E:\tractor_cli`). The **farm
+  account lacks write access** to GitHub (403 on push), so the assistant commits
+  & pushes from Windows; the user pulls on the farm.
+- **Commit/push after every change** (user preference). End commit messages with the
+  `Co-Authored-By` trailer.
+- **Shell on Windows is PowerShell.** Multi-line commit messages use a
+  single-quoted here-string:
+  ```powershell
+  git commit -m @'
+  subject line
+
+  body…
+  '@
+  ```
+  Avoid embedding `"` or other quotes in the message — they break the here-string.
+- **Reference Tractor source** is in `tractor_source/` (gitignored, local only).
+  It's the real Tractor Python source — grep it to learn the engine API rather
+  than guessing. The HTTP dispatch table is NOT there (it's in the engine binary),
+  so some query names had to be inferred/tested.
+- **Memory**: the user prefers PowerShell on Windows and "commit+push after every
+  change" (already captured in assistant memory).
+
+---
+
+## Build / test / run
+
+```bash
+go build ./cmd/tractor      # or: go run ./cmd/tractor
+go test ./...               # unit tests (pure logic)
+make build | run | test | fmt | snapshot
+```
+
+Tooling: `Makefile`, `.goreleaser.yaml` (linux/darwin × amd64/arm64),
+`.github/workflows/ci.yml` (gofmt report, vet, build, test on Go 1.24),
+`--version` flag wired via `-ldflags -X main.version`.
+
+---
+
+## Configuration
+
+`~/.config/tractor-cli/config.yaml` (all optional) + env overrides
+(`TRACTOR_HOST/PORT/USER`, `TRACTOR_LDAP_*`). Sections: `engine`, `auth`, `ui`,
+`ldap`, `keys`. UI prefs + saved filters persist to
+`~/.config/tractor-cli/state.json`.
+
+- **`TRACTOR_PASSWORD` is read ONLY from the environment — never the config file.**
+  This rule is intentional and load-bearing; keep it.
+- `keys:` rebinds the global shortcuts (see below); view-internal keys are fixed.
+
+### Optional system deps
+- **`xclip`** (or `xsel`/`wl-copy`) — required for clipboard yank (`y`). MATE/VTE
+  terminals block the OSC 52 escape, so a local clipboard tool is the reliable path
+  (`sudo dnf install xclip`). The app warns in the status bar if none is installed.
+- **`ldapsearch` + Kerberos ticket** — owner-filter autocomplete from AD; falls
+  back to `getent passwd` + job owners.
+- **`$PAGER`** (default `less -R`) — `o` opens a task log externally.
+
+---
+
+## Architecture & file map
+
+Elm-style Model/Update/View throughout. Root model in `internal/tui/app.go`
+switches between views and owns overlays (help, notes, trace, save/load-filter,
+copy chooser, action menu) and the status bar.
+
+```
+cmd/tractor/main.go              entry (cobra); --sanity/--raw/--version
+internal/config/config.go        YAML+env config; KeymapConfig; Password() (env only)
+internal/state/state.go          ~/.config/tractor-cli/state.json (layout + saved filters)
+internal/users/users.go          AD (ldapsearch GSSAPI) + getent username sources
+internal/models/                 Job, Task, TaskDetail, Blade, BladeCommand, JobNote
+internal/api/
+  client.go                      challenge-response login, TractorUser cookie + tsid
+  jobs.go                        QueryJobs (q=jobs + tractorselect), buildSelectWhere
+  tasks.go                       QueryTasks (q=jtree), JobNotes, decodeTaskState, TaskDetails
+  logs.go                        TaskLog (q=tasklogs → LoggingRedirect, %u owner)
+  actions.go                     job/task ops (q=queue: jattr/jretry/tskip/jinterrupt/…)
+  blades.go                      QueryBlades, BladeDetails (tractorselect), nimby/eject/delist/trace
+internal/tui/app.go              root model, key dispatch, overlays, status bar, clipboard
+internal/tui/views/
+  jobs/list.go                   jobs table, filter, summary line, FLG, watch, panel
+  jobs/detail.go                 task list, task info panel, multi-select
+  filter/bar.go                  multi-field filter form (owner/projects autocomplete)
+  logview/logview.go             log viewer (syntax colour, search, wrap/scroll, gutter)
+  blades/blades.go               blade list + heatmap grid
+  blades/detail.go               blade running-commands list
+  action/action.go               action menu (menu→input→confirm; job/task/blade/bulk)
+  styles/styles.go               shared lipgloss styles
+```
+
+Key dispatch: `app.go` resolves raw keys through a configured key→action map
+(`keyAction`), so the global switch matches action names. Structural keys
+(`ctrl+c`/`enter`/`esc`) and view-internal keys are literal/fixed. `capturingInput()`
+makes global keys defer to a focused text input.
+
+---
+
+## Tractor engine API — quirks learned
+
+- **Auth**: `GET /Tractor/monitor?q=login` challenge-response (gentoken +
+  `trInternalPasswordHash`), then `Cookie: TractorUser=<user>` + `tsid` on every request.
+- **Jobs**: `q=jobs` (nested `users→J<jid>→data`, `nTasks=[total,active,done,error]`).
+  Filtered queries go through **`tractorselect(...)` over `/Tractor/db`** (the
+  supported path; no ~2500 cap). **`q=select` on the monitor is NOT valid** (HTTP 400).
+- **Tasks**: `q=jtree` (task tree; state packed as `<log><state>[,<prog>]`, e.g. `-A,50`).
+- **Task details**: `q=taskdetails` (argv, blades, rss/vsz in GB→×1024 for MB, cpu, slots, env, service, min/max).
+- **Logs**: `q=tasklogs` → `{LoggingRedirect:[uris]}`; fetch each URI; substitute
+  the **`%u` owner placeholder** in the path (also an invalid URL escape if left in).
+- **Notes**: `q=jtree&notes=1` returns `notes` under the job; lock/note flags come
+  from jobinfo (`lockowner`, `locknote`, `lastnoteid`).
+- **Blades**: `q=blades` (terse keys: `hnm`,`siu`,`as`,`t`,…). Blade running commands:
+  no monitor query — assembled via **`tractorselect`** on invocation+job+command.
+  `TractorJSON*` functions are NOT whitelisted for the db proxy ("invalid db proxy call").
+- **Actions** (`/Tractor/queue?q=…`): `jattr` (pause/lock/priority via `set_*`),
+  `jretry`, `tskip`, `jinterrupt`, `jrestart`, `jretire`, `tretry`.
+- **Blade control**: nimby `battribute` (`/Tractor/ctrl`), `ejectall` (`/Tractor/queue`),
+  `delist` (`/Tractor/btrack`), `tracer` (`/Tractor/ctrl`, plain text, 12s timeout).
+- **WHERE syntax** is Tractor natural-language, NOT SQL: unquoted values
+  (`owner=alice`), lists (`owner in [a, b]`), regex `like`, status aliases
+  (`active`/`error`/`done`/`blocked`, `pausetime is not null`).
+
+---
+
+## Status — all phases done
 
 | Phase | Title | Status |
 |-------|-------|--------|
-| 1 | Foundation (config, API client, auth, models) | ✅ Done |
-| 2 | Jobs list view | ✅ Done |
-| 3 | Job detail + task list + task logs | ✅ Done |
-| 4 | Actions (retry / kill / delete / skip / pause …) | ✅ Done |
-| 5 | Blades view | ✅ Done |
-| 6 | Polish & release | 🚧 In progress |
+| 1 | Foundation (config, API client, auth, models) | ✅ |
+| 2 | Jobs list view | ✅ |
+| 3 | Job detail + task list + task logs | ✅ |
+| 4 | Actions (incl. multi-select, lock/unlock, notes) | ✅ |
+| 5 | Blades view (list, detail, heatmap, trace) | ✅ |
+| 6 | Polish & release (README, CI, goreleaser, tests, keymap) | ✅ |
+| + | Quality-of-life batch (summary, watch, clipboard, saved filters, …) | ✅ |
 
----
+### Feature summary
+- **Jobs**: auto-refresh table; multi-colour PROGRESS bar; full sort; resizable TITLE;
+  multi-field filter form with owner/projects autocomplete; my/errors toggles;
+  metadata + lock/notes panel; FLG column (W watch / L lock / N note); farm summary
+  line; relative-time toggle.
+- **Tasks**: list (sort/search), info panel (RSS/VSZ/CPU/slots/cmd/env/service via
+  `q=taskdetails`), multi-select.
+- **Logs**: syntax colour, search (`n`/`N`), wrap/horizontal-scroll toggle, line
+  numbers, `$PAGER`.
+- **Actions** (`a`): job (pause/unpause, retry errored/active, skip errored, set
+  priority, lock/unlock, interrupt, restart, delete), task (retry/resume/skip/kill),
+  blade (nimby/unnimby, eject, delist); confirmation for destructive; **bulk** across
+  a selection (Space/A select, aggregate result).
+- **Blades** (`b`): list, info panel, **heatmap** (`g`; idle=light-grey, active=green,
+  nimby=yellow, down=grey; selection = red side-frames), running-commands detail (Enter),
+  trace (`t`).
+- **QoL**: watch+notify (`w`, bell+banner), clipboard yank (`y`; task view chooses
+  Command/Env/Service), saved filters (`s`/`f`), persisted layout, mouse wheel.
 
-## Architecture notes
-
-- **TUI**: Bubble Tea (Elm-style Model/Update/View); `bubbles` table, textinput,
-  viewport, spinner; `lipgloss` for styling.
-- **Entry point**: `cmd/tractor/main.go` (cobra). Flags: `--sanity`, `--raw`.
-- **Root model**: `internal/tui/app.go` switches between views
-  (`ViewJobsList`, `ViewJobDetail`, `ViewTaskLog`) and owns the status bar +
-  help overlay. Key handling consults a shared `capturingInput()` so global
-  keys defer to a focused text input.
-- **Views**: `internal/tui/views/jobs` (list + detail), `.../filter` (filter
-  form), `.../logview` (log viewer).
-- **API**: `internal/api` — challenge-response login, `TractorUser` cookie +
-  `tsid` on every request.
-- **Engine quirks learned**:
-  - Job/task queries use `q=jobs` and `q=jtree`; **`q=select` is not a valid
-    monitor query** on our engine (returns HTTP 400).
-  - Job filtering falls back to `q=jobs` + client-side filtering (the
-    high-limit `q=select` path is effectively dead — see Known issues).
-  - Task tree (`q=jtree`) packs state as `<log><state>[,<progress>]`
-    (e.g. `-A,50`).
-  - Task details: `q=taskdetails`; logs: `q=tasklogs` → `LoggingRedirect`
-    URIs (with a `%u` owner placeholder to substitute).
-  - WHERE clauses use Tractor's natural-language syntax (unquoted values,
-    `in [a, b]`, regex `like`), not SQL.
-
----
-
-## Phase 1 — Foundation ✅
-
-- YAML + env config (`internal/config`); `TRACTOR_PASSWORD` only ever from the
-  environment, **never** the config file.
-- API client with challenge-response auth (`gentoken` +
-  `trInternalPasswordHash` + `TractorUser` cookie).
-- Core models; `--sanity` / `--raw` debug paths.
-
-## Phase 2 — Jobs list view ✅
-
-- Auto-refreshing jobs table with per-row status colouring.
-- **Columns**: JID, PROGRESS (multi-colour bar: done/err/active/remaining),
-  TITLE, OWNER, STATUS, ACT, ERR, DONE, TOTAL, PRI, SPOOLED, PROJECTS,
-  SPOOLHOST. Auto-sized to content; TITLE fills remaining width and is
-  user-resizable (`<` / `>`).
-- **Sorting** by column (number keys `1`–`9`, press again to reverse).
-- **Filter form** (`/`) — one field per filter, preserved on reopen:
-  - Owner (multi-value, AD/getent + job-owner autocomplete)
-  - Status (multi-select chips)
-  - JID (list and ranges, e.g. `123, 200-300`)
-  - Priority, Projects (autocomplete), Title
-- **Owner autocomplete** sourced from Active Directory via `ldapsearch -Y
-  GSSAPI` (configurable; opt-in `kinit`), falling back to `getent passwd` and
-  always merged with owners present in loaded jobs.
-- Quick toggles: `m` (my jobs), `e` (errors only); `c` clears all filters;
-  `R` refresh.
-- **Bottom info panel**: metadata for the highlighted job.
-- **Help overlay** (`?`).
-
-## Phase 3 — Job detail, tasks & logs ✅
-
-- **Task list** (Enter on a job): TID, TITLE, STATE, PROG, BLADE, SERVICE,
-  ACTIVE; rows coloured by state.
-- Sortable columns (`1`–`7`) and title search (`/`).
-- **Task info panel** (`q=taskdetails`): command, blades, RSS/VSZ (MB),
-  CPU %, slots in use, service key, env key, min/max slots, min/max run —
-  fetched per selection and on refresh.
-- **Task log viewer** (Enter on a task):
-  - Fetched via `q=tasklogs` (handles `LoggingRedirect` + `%u` owner).
-  - VS Code-style syntax colouring (timestamps, log levels, strings, paths,
-    URLs, numbers).
-  - Search (`/`, `n`/`N`, `c` to clear), `g`/`G` top/bottom, `R` refresh.
-  - Line wrapping with a **line-number gutter**; `w` toggles to
-    horizontal-scroll mode (`←`/`→`).
-- **Sibling navigation**: `[` / `]` jump to previous/next task's log (in the
-  log view) and previous/next job's tasks (in the task view); selection in the
-  parent view follows along.
-- Job and task **titles** shown in headers and the status bar.
-
----
-
-## Phase 4 — Actions 🚧 (in progress)
-
-Mutating operations on jobs and tasks, via an `a` action menu with an optional
-value-input step and a confirmation step for destructive actions.
-
-- [x] Action menu component (`internal/tui/views/action`) + confirmation.
-- [x] Job actions: pause/unpause, retry errored, retry active, skip errored,
-      interrupt, restart, delete, change priority.
-- [x] Task actions: retry, resume, skip, kill.
-- [x] Mapped to engine `q=queue` operations (verified against `EngineClient.py`).
-- [x] Result + errors surfaced in the status bar; active view refreshes after.
-- [ ] Delay / undelay and lock / unlock.
-- [x] Multi-select / bulk actions: Space toggles a row, A selects all, Esc
-      clears; `a` then applies the chosen op across the whole selection and
-      reports an aggregate result.
-- [x] Lock / unlock jobs (lock takes an optional note).
-- [x] Job notes: FLG column (L=locked, N=has notes), lock/notes summary in the
-      info panel, and an `n` overlay to read the full notes.
-- [ ] Delay / undelay (parked — not currently needed).
-- [ ] Permission/ownership awareness — left to the engine to reject; we surface
-      its error (intentional, per decision).
-
-## Phase 5 — Blades view ✅
-
-- [x] Blade list (`q=blades`): NAME, STATUS (up/down from heartbeat), NIMBY,
-      SLOTS (in-use/total), CPU load, MEM, DISK, TASKS, PROFILE, OWNERS.
-- [x] Reached with `b` from the jobs list; `Esc` returns.
-- [x] Name search (`/`), column sort (`1`–`9`), row colouring
-      (down=grey, nimby=yellow, up=green), auto-refresh.
-- [x] Info panel: addr/port, OS, GPU, version, UDI, CPUs, heartbeat, uptime,
-      note.
-- [x] Blade actions via `a`: nimby/unnimby, eject (confirm), delist (confirm).
-- [x] Blade detail view (Enter): the blade's running commands (`q=bladedetails`)
-      — JID, TID, OWNER, SLOTS, STARTED, COMMAND; searchable and sortable.
-- [x] Trace output (`q=tracer`): `t` opens a scrollable overlay with the
-      engine's diagnostics for the highlighted blade.
-
-## Quality-of-life features ✅
-
-- [x] Farm summary line (job status breakdown, task totals, slot/blade
-      utilisation, "mine").
-- [x] Lifted the job-filter cap (filtered queries via tractorselect /Tractor/db).
-- [x] Watch jobs (`w`) with completion/error notification (banner + bell).
-- [x] Clipboard yank (`y`, OSC 52) and open-log-in-`$PAGER` (`o`).
-- [x] Saved named filters (`s` save, `f` recall/delete) + persisted layout
-      (title width, sort, relative-time) in `~/.config/tractor-cli/state.json`.
-- [x] Relative-time toggle for SPOOLED (`T`).
-- [x] Mouse wheel scrolling.
-- [x] Blade heatmap grid (`g`).
-
-## Phase 6 — Polish & release 🚧
-
-- [x] README + usage docs (config, `TRACTOR_PASSWORD` rule, xclip/ldap deps, keys).
-- [x] `goreleaser` config (`.goreleaser.yaml`) + `Makefile` + `--version`.
-- [x] CI (GitHub Actions: gofmt report, vet, build, test).
-- [x] Unit tests for filter parsing, WHERE building, status/state decoding,
-      passwd/LDAP parsing, metadata/progress helpers.
-- [x] Configurable keymap for global shortcuts (`keys:` in config); view-internal
-      keys remain fixed.
+### Keymap (global keys configurable via `keys:`)
+`/` filter/search · `Enter` drill in · `Esc` back · `a` actions · `Space`/`A` select ·
+`w` watch · `y` copy · `n` notes · `b` blades · `g` heatmap · `t` trace · `o` pager ·
+`s`/`f` save/load filter · `[`/`]` prev/next sibling · `1`–`9` sort · `<`/`>` TITLE width ·
+`T` rel-time · `R` refresh · `?` help · `q` quit. (`?` always lists the live keys.)
 
 ---
 
 ## Known issues / tech debt
+- **Log auth**: log URIs fetched with the `TractorUser` cookie; a site whose logging
+  service needs different auth may need work.
+- **Selected jobs row** PROGRESS bar renders monochrome (keeps Bubble Tea's selection
+  highlight instead of per-segment colour).
+- **Log wrapping** is character-based (no word-aware wrap).
+- **OSC 52 clipboard** is blocked by VTE terminals (MATE) → relies on `xclip` etc.
+- Filtered job results lose FLG (lock/note) flags (not in the `tractorselect` columns).
 
-- ~~`q=select` is unsupported~~ — fixed: filtered job queries now go through
-  `tractorselect` over `/Tractor/db` (no cap).
-- **Owner-in-`%u` / log auth**: log URIs are fetched with the `TractorUser`
-  cookie; if a site's logging service needs different auth this may need work.
-- **Selected row** in the jobs PROGRESS column renders monochrome (the row
-  keeps the Bubble Tea selection highlight instead of per-segment colour).
-- **Long log lines**: wrap is character-based; no word-aware wrapping.
-- Cannot compile on the Windows dev box — every change is verified by building
-  on the Linux farm (`go run ./cmd/tractor/`).
+## Possible next steps (optional)
+- Tag `v0.1.0` (`git tag v0.1.0 && git push --tags` from a write-access machine;
+  optional `goreleaser release --clean`).
+- Delay/undelay job actions (parked); per-command listing in task/blade panels;
+  word-aware log wrap; configurable view-internal keys; permission/ownership guard
+  (currently engine-enforced, error surfaced).
 
-## Conventions
-
-- Commit and push to `origin` after each change.
-- PowerShell on Windows; code transferred/built on Linux.
+_Last updated: 2026-06-10 — all phases complete (latest commit on `master`)._
