@@ -28,13 +28,22 @@ type JobFilter struct {
 	JIDTo    int      // inclusive range end; 0 = unset
 	Priority float64  // exact priority match; 0 = no filter
 	Projects []string // job.Projects must contain one of these (case-insensitive)
+
+	// SpoolAfter / SpoolBefore are raw Tractor time tokens compared against the
+	// job spooltime. Tractor's WHERE language parses both relative tokens
+	// ("-24h", "-7d", "-1w", "-30m") and absolute dates ("3/15/25", "5pm").
+	// "" = no filter. SpoolAfter maps to "spooltime > X", SpoolBefore to
+	// "spooltime < X".
+	SpoolAfter  string
+	SpoolBefore string
 }
 
 // IsEmpty reports whether no filter criteria are set.
 func (f JobFilter) IsEmpty() bool {
 	return len(f.Owners) == 0 && len(f.Statuses) == 0 && f.Title == "" &&
 		len(f.JIDs) == 0 && f.JIDFrom == 0 && f.JIDTo == 0 &&
-		f.Priority == 0 && len(f.Projects) == 0
+		f.Priority == 0 && len(f.Projects) == 0 &&
+		f.SpoolAfter == "" && f.SpoolBefore == ""
 }
 
 // rawJobData mirrors the actual JSON shape inside each job's "data" object.
@@ -143,6 +152,91 @@ func spoolTimeString(v interface{}) string {
 		return time.Unix(int64(t), 0).Format("2006-01-02 15:04:05")
 	}
 	return ""
+}
+
+// parseJobSpoolTime parses a job's spooltime display string ("2006-01-02
+// 15:04:05", optionally with a trailing fraction/zone) into a time.Time.
+func parseJobSpoolTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	} {
+		if len(s) >= len(layout) {
+			if t, err := time.ParseInLocation(layout, s[:len(layout)], time.Local); err == nil {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// parseSpoolToken converts a Tractor time token into an absolute time.Time for
+// client-side comparison. It understands relative tokens ("-24h", "-7d",
+// "-1w", "-30m", "-15s") and a few common absolute date forms. Tractor's own
+// parser is richer; unrecognised tokens return ok=false so the caller skips the
+// criterion client-side (the server-side query still applies it).
+func parseSpoolToken(tok string) (time.Time, bool) {
+	tok = strings.TrimSpace(tok)
+	if tok == "" {
+		return time.Time{}, false
+	}
+	if strings.HasPrefix(tok, "-") || strings.HasPrefix(tok, "+") {
+		if d, ok := parseRelativeDuration(tok); ok {
+			return time.Now().Add(d), true
+		}
+		return time.Time{}, false
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		"1/2/2006",
+		"1/2/06",
+	} {
+		if t, err := time.ParseInLocation(layout, tok, time.Local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// parseRelativeDuration parses a signed relative token like "-24h", "-7d",
+// "-1w", "-30m" or "-15s" into a time.Duration (negative = into the past).
+func parseRelativeDuration(tok string) (time.Duration, bool) {
+	if len(tok) < 3 {
+		return 0, false
+	}
+	sign := time.Duration(1)
+	if tok[0] == '-' {
+		sign = -1
+	}
+	body := tok[1:]
+	unit := body[len(body)-1]
+	n, err := strconv.Atoi(body[:len(body)-1])
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	var per time.Duration
+	switch unit {
+	case 's':
+		per = time.Second
+	case 'm':
+		per = time.Minute
+	case 'h':
+		per = time.Hour
+	case 'd':
+		per = 24 * time.Hour
+	case 'w':
+		per = 7 * 24 * time.Hour
+	default:
+		return 0, false
+	}
+	return sign * time.Duration(n) * per, true
 }
 
 // deriveStatus maps Tractor's internal nTasks counts to a human-readable status.
@@ -324,6 +418,15 @@ func buildSelectWhere(f JobFilter) string {
 		parts = append(parts, "title like "+f.Title)
 	}
 
+	// Spool date window. The token (relative "-24h" or absolute "3/15/25") is
+	// passed verbatim — Tractor's WHERE parser understands both forms.
+	if s := strings.TrimSpace(f.SpoolAfter); s != "" {
+		parts = append(parts, "spooltime > "+s)
+	}
+	if s := strings.TrimSpace(f.SpoolBefore); s != "" {
+		parts = append(parts, "spooltime < "+s)
+	}
+
 	return strings.Join(parts, " and ")
 }
 
@@ -397,6 +500,25 @@ func matchesFilter(j models.Job, f JobFilter) bool {
 	// Title: case-insensitive substring.
 	if f.Title != "" && !strings.Contains(strings.ToLower(j.Title), strings.ToLower(f.Title)) {
 		return false
+	}
+
+	// Spool date window. Best-effort client-side: if either the job spooltime
+	// or the filter token can't be parsed here, the criterion is skipped (the
+	// authoritative filtering happens server-side via buildSelectWhere; this
+	// path is only the q=jobs fallback).
+	if f.SpoolAfter != "" || f.SpoolBefore != "" {
+		if jt, ok := parseJobSpoolTime(j.SpoolTime); ok {
+			if f.SpoolAfter != "" {
+				if at, ok := parseSpoolToken(f.SpoolAfter); ok && !jt.After(at) {
+					return false
+				}
+			}
+			if f.SpoolBefore != "" {
+				if bt, ok := parseSpoolToken(f.SpoolBefore); ok && !jt.Before(bt) {
+					return false
+				}
+			}
+		}
 	}
 
 	// Projects: job.Projects must contain at least one of the filter terms.

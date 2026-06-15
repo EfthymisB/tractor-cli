@@ -148,7 +148,9 @@ makes global keys defer to a focused text input.
   `delist` (`/Tractor/btrack`), `tracer` (`/Tractor/ctrl`, plain text, 12s timeout).
 - **WHERE syntax** is Tractor natural-language, NOT SQL: unquoted values
   (`owner=alice`), lists (`owner in [a, b]`), regex `like`, status aliases
-  (`active`/`error`/`done`/`blocked`, `pausetime is not null`).
+  (`active`/`error`/`done`/`blocked`, `pausetime is not null`). Time columns
+  accept relative tokens (`spooltime > -24h`, `-7d`, `-1w`, `-30m`, `-15s`) and
+  absolute dates (`spooltime < 3/15/25`).
 
 ---
 
@@ -166,7 +168,9 @@ makes global keys defer to a focused text input.
 
 ### Feature summary
 - **Jobs**: auto-refresh table; multi-colour PROGRESS bar; full sort; resizable TITLE;
-  multi-field filter form with owner/projects autocomplete; my/errors toggles;
+  multi-field filter form with owner/projects autocomplete + a spool-date window
+  (Spooled >/< accepting relative tokens like `-24h`/`-7d` or absolute dates);
+  my/errors toggles;
   metadata + lock/notes panel; FLG column (W watch / L lock / N note); farm summary
   line; relative-time toggle.
 - **Tasks**: list (sort/search), info panel (RSS/VSZ/CPU/slots/cmd/env/service via

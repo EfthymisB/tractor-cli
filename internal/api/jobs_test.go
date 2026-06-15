@@ -2,6 +2,7 @@ package api
 
 import (
 	"testing"
+	"time"
 
 	"github.com/tractor-cli/tractor-cli/internal/models"
 )
@@ -40,6 +41,9 @@ func TestBuildSelectWhere(t *testing.T) {
 		{"paused", JobFilter{Statuses: []string{"paused"}}, "pausetime is not null"},
 		{"priority", JobFilter{Priority: 100}, "priority=100"},
 		{"title", JobFilter{Title: "comp"}, "title like comp"},
+		{"spooled after relative", JobFilter{SpoolAfter: "-24h"}, "spooltime > -24h"},
+		{"spooled before date", JobFilter{SpoolBefore: "3/15/25"}, "spooltime < 3/15/25"},
+		{"spool window", JobFilter{SpoolAfter: "-7d", SpoolBefore: "-1h"}, "spooltime > -7d and spooltime < -1h"},
 		{"combo", JobFilter{Owners: []string{"a"}, Statuses: []string{"error"}}, "owner=a and error"},
 		{"empty", JobFilter{}, ""},
 	}
@@ -79,5 +83,40 @@ func TestApplyClientFilters(t *testing.T) {
 	got = applyClientFilters(jobs, JobFilter{JIDs: []int{2}})
 	if len(got) != 1 || got[0].JID != 2 {
 		t.Fatalf("jid filter: got %v", got)
+	}
+}
+
+func TestParseRelativeDuration(t *testing.T) {
+	cases := []struct {
+		tok  string
+		want time.Duration
+		ok   bool
+	}{
+		{"-24h", -24 * time.Hour, true},
+		{"-7d", -7 * 24 * time.Hour, true},
+		{"-1w", -7 * 24 * time.Hour, true},
+		{"-30m", -30 * time.Minute, true},
+		{"-15s", -15 * time.Second, true},
+		{"-2x", 0, false},
+		{"", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := parseRelativeDuration(c.tok)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("parseRelativeDuration(%q)=%v,%v want %v,%v", c.tok, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestSpoolWindowClientFilter(t *testing.T) {
+	now := time.Now()
+	jobs := []models.Job{
+		{JID: 1, SpoolTime: now.Add(-2 * time.Hour).Format("2006-01-02 15:04:05")},
+		{JID: 2, SpoolTime: now.Add(-48 * time.Hour).Format("2006-01-02 15:04:05")},
+	}
+	// Jobs spooled in the last 24h: only JID 1.
+	got := applyClientFilters(jobs, JobFilter{SpoolAfter: "-24h"})
+	if len(got) != 1 || got[0].JID != 1 {
+		t.Fatalf("spool after -24h: got %v", got)
 	}
 }

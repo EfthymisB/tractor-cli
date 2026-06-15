@@ -100,3 +100,15 @@ Press `?` in the app for the full, always-current shortcut list. Highlights:
 | `1`–`9` | Sort by column |
 | `s` / `f` | Save / recall a named filter |
 | `q` | Quit |
+
+### Filter form
+
+The jobs filter form (`/`) has fields for owner, status, JID (list or range),
+priority, projects, title, and a **spool-date window**:
+
+- **Spooled >** — only jobs spooled *after* this point.
+- **Spooled <** — only jobs spooled *before* this point.
+
+Both accept Tractor's native time syntax: relative tokens (`-24h`, `-7d`,
+`-1w`, `-30m`, `-15s` — e.g. `-24h` for the last 24 hours) or absolute dates
+(`3/15/25`, `2025-03-15`). Either bound may be left blank.

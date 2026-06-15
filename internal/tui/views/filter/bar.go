@@ -29,6 +29,8 @@ const (
 	fieldPrio
 	fieldProjects
 	fieldTitle
+	fieldAfter
+	fieldBefore
 	numFields
 )
 
@@ -60,6 +62,8 @@ type Model struct {
 	prio     textinput.Model
 	projects textinput.Model
 	title    textinput.Model
+	after    textinput.Model
+	before   textinput.Model
 
 	statusSel map[string]bool // selected statuses
 	statusCur int             // sub-cursor among status chips
@@ -86,6 +90,8 @@ func New() Model {
 		prio:      mk("1000"),
 		projects:  mk("cc,thornfield"),
 		title:     mk("comp"),
+		after:     mk("-24h, -7d, 3/15/25"),
+		before:    mk("-1h, 3/20/25"),
 		statusSel: make(map[string]bool),
 	}
 }
@@ -146,6 +152,8 @@ func (m Model) Open(cur api.JobFilter) (Model, tea.Cmd) {
 	}
 	m.projects.SetValue(strings.Join(cur.Projects, ","))
 	m.title.SetValue(cur.Title)
+	m.after.SetValue(cur.SpoolAfter)
+	m.before.SetValue(cur.SpoolBefore)
 
 	m.statusSel = make(map[string]bool)
 	for _, s := range cur.Statuses {
@@ -252,6 +260,10 @@ func (m Model) updateFocusedInput(msg tea.Msg) (Model, tea.Cmd) {
 		m.projects, cmd = m.projects.Update(msg)
 	case fieldTitle:
 		m.title, cmd = m.title.Update(msg)
+	case fieldAfter:
+		m.after, cmd = m.after.Update(msg)
+	case fieldBefore:
+		m.before, cmd = m.before.Update(msg)
 	}
 	return m, cmd
 }
@@ -271,6 +283,8 @@ func (m Model) View(width int) string {
 	m.prio.Width = bodyWidth
 	m.projects.Width = bodyWidth
 	m.title.Width = bodyWidth
+	m.after.Width = bodyWidth
+	m.before.Width = bodyWidth
 
 	var b strings.Builder
 	b.WriteString(m.row("Owner", fieldOwner, m.owner.View()))
@@ -285,6 +299,8 @@ func (m Model) View(width int) string {
 		b.WriteString("\n" + m.renderDropdown())
 	}
 	b.WriteString("\n" + m.row("Title", fieldTitle, m.title.View()))
+	b.WriteString("\n" + m.row("Spooled >", fieldAfter, m.after.View()))
+	b.WriteString("\n" + m.row("Spooled <", fieldBefore, m.before.View()))
 	b.WriteString("\n" + m.helpLine())
 
 	return styles.FilterBorder.Width(width - 4).Render(b.String())
@@ -373,6 +389,10 @@ func (m Model) focusField(i int) (Model, tea.Cmd) {
 		cmd = m.projects.Focus()
 	case fieldTitle:
 		cmd = m.title.Focus()
+	case fieldAfter:
+		cmd = m.after.Focus()
+	case fieldBefore:
+		cmd = m.before.Focus()
 	}
 	return m, cmd
 }
@@ -383,6 +403,8 @@ func (m *Model) blurAll() {
 	m.prio.Blur()
 	m.projects.Blur()
 	m.title.Blur()
+	m.after.Blur()
+	m.before.Blur()
 }
 
 func (m Model) nextField() int { return (m.focus + 1) % numFields }
@@ -500,6 +522,8 @@ func (m Model) buildFilter() api.JobFilter {
 	if t := strings.TrimSpace(m.title.Value()); t != "" {
 		f.Title = t
 	}
+	f.SpoolAfter = strings.TrimSpace(m.after.Value())
+	f.SpoolBefore = strings.TrimSpace(m.before.Value())
 	if p, err := strconv.ParseFloat(strings.TrimSpace(m.prio.Value()), 64); err == nil {
 		f.Priority = p
 	}
